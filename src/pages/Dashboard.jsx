@@ -353,7 +353,6 @@ const Dashboard = () => {
                 <table className="visits-table">
                   <thead>
                     <tr>
-                      <th>Fecha</th>
                       <th>Nombre completo</th>
                       <th>Cédula</th>
                       <th>Motivo</th>
@@ -361,12 +360,14 @@ const Dashboard = () => {
                       <th>ARL</th>
                       <th>Teléfono</th>
                       <th>Rol</th>
+                      <th>Fecha</th>
+                      <th>Hora</th>
                     </tr>
                   </thead>
                   <tbody>
                     {visitas.length === 0 ? (
                       <tr>
-                        <td colSpan="8" style={{ textAlign: 'center' }}>
+                        <td colSpan="9" style={{ textAlign: 'center' }}>
                           No hay visitas para mostrar
                         </td>
                       </tr>
@@ -374,6 +375,7 @@ const Dashboard = () => {
                       visitas.map((visita, indice) => (
                         <tr key={indice}>
                           <td>{visita.fecha}</td>
+                          <td>{visita.hora}</td>
                           <td>{visita.nombreCompleto}</td>
                           <td>{visita.cedula}</td>
                           <td>{visita.motivo}</td>
