@@ -38,14 +38,14 @@ const Dashboard = () => {
       if (textoBusqueda) {
         const busqueda = textoBusqueda.toLowerCase();
         resultado = resultado.filter(v => 
-          v.nombreCompleto?.toLowerCase().includes(busqueda) ||
+          v.nombre_completo?.toLowerCase().includes(busqueda) ||
           v.cedula?.includes(busqueda)
         );
       }
       
       resultado = resultado.filter(v => {
         try {
-          const fechaVisita = new Date(v.fecha.replace(' ', 'T'));
+          const fechaVisita = new Date(v.fecha_ingreso);
           return fechaVisita.toLocaleDateString('es-CO') === fechaHoy;
         } catch {
           return true;
@@ -84,14 +84,14 @@ const Dashboard = () => {
         if (textoBusqueda) {
           const busqueda = textoBusqueda.toLowerCase();
           resultado = resultado.filter(v => 
-            v.nombreCompleto?.toLowerCase().includes(busqueda) ||
+            v.nombre_completo?.toLowerCase().includes(busqueda) ||
             v.cedula?.includes(busqueda)
           );
         }
         
         resultado = resultado.filter(v => {
           try {
-            const fechaVisita = new Date(v.fecha.replace(' ', 'T'));
+            const fechaVisita = new Date(v.fecha_ingreso);
             return fechaVisita.toLocaleDateString('es-CO') === fechaHoy;
           } catch {
             return true;
@@ -111,7 +111,6 @@ const Dashboard = () => {
 
   const aplicarFiltros = () => {
     const rangoFechas = obtenerRangoFechas(periodo, fechaInicioPersonalizada, fechaFinPersonalizada);
-    console.log('Filtrando por:', { textoBusqueda, periodo, filtroRol, rangoFechas });
     
     let resultado = [...todasLasVisitas];
     
@@ -122,14 +121,14 @@ const Dashboard = () => {
     if (textoBusqueda) {
       const busqueda = textoBusqueda.toLowerCase();
       resultado = resultado.filter(v => 
-        v.nombreCompleto?.toLowerCase().includes(busqueda) ||
+        v.nombre_completo?.toLowerCase().includes(busqueda) ||
         v.cedula?.includes(busqueda)
       );
     }
     
     resultado = resultado.filter(v => {
       try {
-        const fechaVisita = new Date(v.fecha.replace(' ', 'T'));
+        const fechaVisita = new Date(v.fecha_ingreso);
         return isWithinInterval(fechaVisita, { start: rangoFechas.inicio, end: rangoFechas.fin });
       } catch {
         return true;
@@ -141,9 +140,9 @@ const Dashboard = () => {
 
   const obtenerDatosPorRol = () => {
     const conteo = {
-      empleado: 0,
-      visitantes: 0,
-      proveedores: 0
+      Empleado: 0,
+      Visitantes: 0,
+      Proveedores: 0
     };
     visitas.forEach(v => {
       if (conteo[v.rol] !== undefined) {
@@ -151,9 +150,9 @@ const Dashboard = () => {
       }
     });
     return [
-      { nombre: 'Empleado', valor: conteo.empleado },
-      { nombre: 'Visitantes', valor: conteo.visitantes },
-      { nombre: 'Proveedores', valor: conteo.proveedores }
+      { nombre: 'Empleado', valor: conteo.Empleado },
+      { nombre: 'Visitantes', valor: conteo.Visitantes },
+      { nombre: 'Proveedores', valor: conteo.Proveedores }
     ].filter(item => item.valor > 0);
   };
 
@@ -161,9 +160,8 @@ const Dashboard = () => {
     const conteoPorHora = {};
     visitas.forEach(v => {
       try {
-        const fecha = new Date(v.fecha.replace(' ', 'T'));
-        const hora = fecha.getHours();
-        const clave = `${hora.toString().padStart(2, '0')}:00`;
+        const horaStr = v.hora_ingreso ? v.hora_ingreso.substring(0, 2) : '00';
+        const clave = `${horaStr}:00`;
         conteoPorHora[clave] = (conteoPorHora[clave] || 0) + 1;
       } catch {
         // ignorar
@@ -181,7 +179,7 @@ const Dashboard = () => {
     const conteoPorDia = {};
     visitas.forEach(v => {
       try {
-        const fecha = new Date(v.fecha.replace(' ', 'T'));
+        const fecha = new Date(v.fecha_ingreso);
         const clave = fecha.toLocaleDateString('es-CO');
         conteoPorDia[clave] = (conteoPorDia[clave] || 0) + 1;
       } catch {
@@ -201,7 +199,7 @@ const Dashboard = () => {
     const fechaHoy = hoy.toLocaleDateString('es-CO');
     return todasLasVisitas.filter(v => {
       try {
-        const fechaVisita = new Date(v.fecha.replace(' ', 'T'));
+        const fechaVisita = new Date(v.fecha_ingreso);
         return fechaVisita.toLocaleDateString('es-CO') === fechaHoy;
       } catch {
         return false;
@@ -213,8 +211,6 @@ const Dashboard = () => {
   const totalEntradasHoy = entradasHoy.length;
   const visitantesUnicosHoy = new Set(entradasHoy.map(v => v.cedula)).size;
 
-  const totalVisitas = visitas.length;
-  const visitantesUnicos = new Set(visitas.map(v => v.cedula)).size;
   const datosPorRol = obtenerDatosPorRol();
   const datosPorHora = obtenerDatosPorHora();
   const datosPorDia = obtenerDatosPorDia();
@@ -276,7 +272,7 @@ const Dashboard = () => {
               <input
                 type="text"
                 id="busqueda"
-                placeholder="Buscar..."
+                placeholder="Nombre o cédula..."
                 value={textoBusqueda}
                 onChange={(e) => setTextoBusqueda(e.target.value)}
               />
@@ -290,9 +286,9 @@ const Dashboard = () => {
                 onChange={(e) => setFiltroRol(e.target.value)}
               >
                 <option value="todos">Todos</option>
-                <option value="empleado">Empleado</option>
-                <option value="visitantes">Visitantes</option>
-                <option value="proveedores">Proveedores</option>
+                <option value="Empleado">Empleado</option>
+                <option value="Visitante">Visitante</option>  
+                <option value="Proveedor">Proveedor</option>
               </select>
             </div>
 
@@ -301,9 +297,7 @@ const Dashboard = () => {
               <select
                 id="periodo"
                 value={periodo}
-                onChange={(e) => {
-                  setPeriodo(e.target.value);
-                }}
+                onChange={(e) => setPeriodo(e.target.value)}
               >
                 <option value="hoy">Hoy</option>
                 <option value="ayer">Ayer</option>
@@ -374,15 +368,15 @@ const Dashboard = () => {
                     ) : (
                       visitas.map((visita, indice) => (
                         <tr key={indice}>
-                          <td>{visita.fecha}</td>
-                          <td>{visita.hora}</td>
-                          <td>{visita.nombreCompleto}</td>
+                          <td>{visita.nombre_completo}</td>
                           <td>{visita.cedula}</td>
                           <td>{visita.motivo}</td>
                           <td>{visita.eps}</td>
-                          <td>{visita.arl}</td>
+                          <td>{visita.arl || 'N/A'}</td>
                           <td>{visita.telefono}</td>
                           <td>{visita.rol}</td>
+                          <td>{visita.fecha_ingreso}</td>
+                          <td>{visita.hora_ingreso}</td>
                         </tr>
                       ))
                     )}
@@ -400,7 +394,7 @@ const Dashboard = () => {
             <div>
               <h2 style={{ margin: 0, fontSize: '1.3rem' }}>Estadísticas de visitas</h2>
               <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.8rem', color: '#718096' }}>
-                Última actualización: {ultimaActualizacion.toLocaleTimeString('es-CO')} • Se actualiza automáticamente cada 5 minutos
+                Última actualización: {ultimaActualizacion.toLocaleTimeString('es-CO')} - Se actualiza automáticamente cada 5 minutos
               </p>
             </div>
           </div>

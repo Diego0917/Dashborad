@@ -1,7 +1,6 @@
 ﻿import axios from 'axios';
 
-// Toma la URL del servidor backend (por ejemplo: http://localhost:5000/api)
-const URL_BASE_API = import.meta.env.VITE_UNIFI_API_BASE_URL || 'http://localhost:3306/api';
+const URL_BASE_API = import.meta.env.VITE_UNIFI_API_BASE_URL || 'http://localhost:3006/api';
 
 const api = axios.create({
   baseURL: URL_BASE_API,
@@ -10,7 +9,6 @@ const api = axios.create({
   },
 });
 
-// Interceptor para añadir la clave API si está definida en el entorno
 api.interceptors.request.use((configuracion) => {
   const claveApi = import.meta.env.VITE_UNIFI_API_KEY;
   if (claveApi) {
