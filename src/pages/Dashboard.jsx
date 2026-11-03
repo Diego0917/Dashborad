@@ -1,219 +1,249 @@
-﻿import { useState, useEffect } from 'react';
-import { useAuth } from '../context/AuthContext';
-import { obtenerRangoFechas } from '../utils/dateHelpers';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { isWithinInterval } from 'date-fns';
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell,
+  Legend,
+} from 'recharts';
+import { useAuth } from '../context/AuthContext';
+import {
+  obtenerRangoFechas,
+  parsearFechaLocal,
+  formatearFechaLegible,
+  obtenerClaveDia,
+  esMismoDia,
+} from '../utils/dateHelpers';
 import { obtenerVisitas } from '../api/unifiApi';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
 import './Dashboard.css';
+
+const COLORES = ['#0066cc', '#38a169', '#dd6b20', '#805ad5', '#e53e3e'];
+
+const FILTROS_INICIALES = {
+  textoBusqueda: '',
+  filtroRol: 'todos',
+  periodo: 'hoy',
+  fechaInicioPersonalizada: '',
+  fechaFinPersonalizada: '',
+};
+
+const INTERVALO_ACTUALIZACION_MS = 300000; // 5 minutos
 
 const Dashboard = () => {
   const { usuario, cerrarSesion } = useAuth();
-  const [textoBusqueda, setTextoBusqueda] = useState('');
-  const [periodo, setPeriodo] = useState('hoy');
-  const [filtroRol, setFiltroRol] = useState('todos');
-  const [fechaInicioPersonalizada, setFechaInicioPersonalizada] = useState('');
-  const [fechaFinPersonalizada, setFechaFinPersonalizada] = useState('');
-  const [visitas, setVisitas] = useState([]);
-  const [cargando, setCargando] = useState(false);
+
+  // Estados de los controles del formulario de filtros
+  const [textoBusqueda, setTextoBusqueda] = useState(FILTROS_INICIALES.textoBusqueda);
+  const [filtroRol, setFiltroRol] = useState(FILTROS_INICIALES.filtroRol);
+  const [periodo, setPeriodo] = useState(FILTROS_INICIALES.periodo);
+  const [fechaInicioPersonalizada, setFechaInicioPersonalizada] = useState(
+    FILTROS_INICIALES.fechaInicioPersonalizada
+  );
+  const [fechaFinPersonalizada, setFechaFinPersonalizada] = useState(
+    FILTROS_INICIALES.fechaFinPersonalizada
+  );
+
+  // Filtros efectivamente aplicados al pulsar "Aplicar Filtros"
+  const [filtrosAplicados, setFiltrosAplicados] = useState(FILTROS_INICIALES);
+
+  // Datos y estado de red / UI
   const [todasLasVisitas, setTodasLasVisitas] = useState([]);
-  const [pestañaActiva, setPestañaActiva] = useState('listado');
-  const [ultimaActualizacion, setUltimaActualizacion] = useState(new Date());
+  const [cargando, setCargando] = useState(true);
+  const [errorCarga, setErrorCarga] = useState('');
+  const [pestanaActiva, setPestanaActiva] = useState('listado');
+  const [ultimaActualizacion, setUltimaActualizacion] = useState(null);
 
-  const COLORES = ['#0066cc', '#38a169', '#dd6b20'];
-
-  useEffect(() => {
-    cargarVisitas();
-  }, []);
-
-  useEffect(() => {
-    if (pestañaActiva === 'listado') {
-      const hoy = new Date();
-      const fechaHoy = hoy.toLocaleDateString('es-CO');
-      let resultado = [...todasLasVisitas];
-      
-      if (filtroRol !== 'todos') {
-        resultado = resultado.filter(v => v.rol === filtroRol);
-      }
-      
-      if (textoBusqueda) {
-        const busqueda = textoBusqueda.toLowerCase();
-        resultado = resultado.filter(v => 
-          v.nombre_completo?.toLowerCase().includes(busqueda) ||
-          v.cedula?.includes(busqueda)
-        );
-      }
-      
-      resultado = resultado.filter(v => {
-        try {
-          const fechaVisita = new Date(v.fecha_ingreso);
-          return fechaVisita.toLocaleDateString('es-CO') === fechaHoy;
-        } catch {
-          return true;
-        }
-      });
-      
-      setVisitas(resultado);
-    }
-  }, [todasLasVisitas, pestañaActiva]);
-
-  useEffect(() => {
-    const intervalo = setInterval(() => {
-      cargarVisitas();
-      setUltimaActualizacion(new Date());
-    }, 300000); // Actualizar cada 5 minutos
-
-    return () => clearInterval(intervalo);
-  }, []);
-
-  const cargarVisitas = async () => {
+  const cargarVisitas = useCallback(async () => {
     setCargando(true);
+    setErrorCarga('');
     try {
       const datos = await obtenerVisitas();
-      setTodasLasVisitas(datos);
+      setTodasLasVisitas(Array.isArray(datos) ? datos : []);
       setUltimaActualizacion(new Date());
-      
-      if (pestañaActiva === 'listado') {
-        const hoy = new Date();
-        const fechaHoy = hoy.toLocaleDateString('es-CO');
-        let resultado = [...datos];
-        
-        if (filtroRol !== 'todos') {
-          resultado = resultado.filter(v => v.rol === filtroRol);
-        }
-        
-        if (textoBusqueda) {
-          const busqueda = textoBusqueda.toLowerCase();
-          resultado = resultado.filter(v => 
-            v.nombre_completo?.toLowerCase().includes(busqueda) ||
-            v.cedula?.includes(busqueda)
-          );
-        }
-        
-        resultado = resultado.filter(v => {
-          try {
-            const fechaVisita = new Date(v.fecha_ingreso);
-            return fechaVisita.toLocaleDateString('es-CO') === fechaHoy;
-          } catch {
-            return true;
-          }
-        });
-        
-        setVisitas(resultado);
-      } else {
-        setVisitas(datos);
-      }
     } catch (error) {
       console.error('Error al cargar visitas:', error);
+      setErrorCarga('No se pudieron cargar las visitas. Verifica que el servidor esté activo.');
     } finally {
       setCargando(false);
     }
-  };
+  }, []);
 
-  const aplicarFiltros = () => {
-    const rangoFechas = obtenerRangoFechas(periodo, fechaInicioPersonalizada, fechaFinPersonalizada);
-    
-    let resultado = [...todasLasVisitas];
-    
-    if (filtroRol !== 'todos') {
-      resultado = resultado.filter(v => v.rol === filtroRol);
-    }
-    
-    if (textoBusqueda) {
-      const busqueda = textoBusqueda.toLowerCase();
-      resultado = resultado.filter(v => 
-        v.nombre_completo?.toLowerCase().includes(busqueda) ||
-        v.cedula?.includes(busqueda)
-      );
-    }
-    
-    resultado = resultado.filter(v => {
+  useEffect(() => {
+    let cancelado = false;
+
+    const inicializar = async () => {
       try {
-        const fechaVisita = new Date(v.fecha_ingreso);
-        return isWithinInterval(fechaVisita, { start: rangoFechas.inicio, end: rangoFechas.fin });
-      } catch {
-        return true;
+        const datos = await obtenerVisitas();
+        if (!cancelado) {
+          setTodasLasVisitas(Array.isArray(datos) ? datos : []);
+          setUltimaActualizacion(new Date());
+          setErrorCarga('');
+        }
+      } catch (error) {
+        if (!cancelado) {
+          console.error('Error al cargar visitas:', error);
+          setErrorCarga('No se pudieron cargar las visitas. Verifica que el servidor esté activo.');
+        }
+      } finally {
+        if (!cancelado) {
+          setCargando(false);
+        }
       }
-    });
-    
-    setVisitas(resultado);
-  };
-
-  const obtenerDatosPorRol = () => {
-    const conteo = {
-      Empleado: 0,
-      Visitantes: 0,
-      Proveedores: 0
     };
-    visitas.forEach(v => {
-      if (conteo[v.rol] !== undefined) {
-        conteo[v.rol]++;
-      }
+
+    inicializar();
+    const intervalo = setInterval(() => {
+      inicializar();
+    }, INTERVALO_ACTUALIZACION_MS);
+
+    return () => {
+      cancelado = true;
+      clearInterval(intervalo);
+    };
+  }, []);
+
+  const aplicarFiltros = (evento) => {
+    if (evento) evento.preventDefault();
+    setFiltrosAplicados({
+      textoBusqueda: textoBusqueda.trim(),
+      filtroRol,
+      periodo,
+      fechaInicioPersonalizada,
+      fechaFinPersonalizada,
     });
-    return [
-      { nombre: 'Empleado', valor: conteo.Empleado },
-      { nombre: 'Visitantes', valor: conteo.Visitantes },
-      { nombre: 'Proveedores', valor: conteo.Proveedores }
-    ].filter(item => item.valor > 0);
+    if (!ultimaActualizacion) {
+      setUltimaActualizacion(new Date());
+    }
   };
 
-  const obtenerDatosPorHora = () => {
-    const conteoPorHora = {};
-    visitas.forEach(v => {
-      try {
-        const horaStr = v.hora_ingreso ? v.hora_ingreso.substring(0, 2) : '00';
-        const clave = `${horaStr}:00`;
-        conteoPorHora[clave] = (conteoPorHora[clave] || 0) + 1;
-      } catch {
-        // ignorar
-      }
-    });
-    return Object.keys(conteoPorHora)
-      .sort()
-      .map(hora => ({
-        hora: hora,
-        cantidad: conteoPorHora[hora]
-      }));
+  const limpiarFiltros = () => {
+    setTextoBusqueda(FILTROS_INICIALES.textoBusqueda);
+    setFiltroRol(FILTROS_INICIALES.filtroRol);
+    setPeriodo(FILTROS_INICIALES.periodo);
+    setFechaInicioPersonalizada(FILTROS_INICIALES.fechaInicioPersonalizada);
+    setFechaFinPersonalizada(FILTROS_INICIALES.fechaFinPersonalizada);
+    setFiltrosAplicados(FILTROS_INICIALES);
   };
 
-  const obtenerDatosPorDia = () => {
-    const conteoPorDia = {};
-    visitas.forEach(v => {
-      try {
-        const fecha = new Date(v.fecha_ingreso);
-        const clave = fecha.toLocaleDateString('es-CO');
-        conteoPorDia[clave] = (conteoPorDia[clave] || 0) + 1;
-      } catch {
-        // ignorar
-      }
-    });
-    return Object.keys(conteoPorDia)
-      .sort((a, b) => new Date(a.split('/').reverse().join('-')) - new Date(b.split('/').reverse().join('-')))
-      .map(dia => ({
-        dia: dia,
-        cantidad: conteoPorDia[dia]
-      }));
-  };
+  // Visitas filtradas para la pestaña "Listado"
+  const visitasFiltradas = useMemo(() => {
+    if (todasLasVisitas.length === 0 || !ultimaActualizacion) return [];
 
-  const obtenerEntradasHoy = () => {
-    const hoy = new Date();
-    const fechaHoy = hoy.toLocaleDateString('es-CO');
-    return todasLasVisitas.filter(v => {
-      try {
-        const fechaVisita = new Date(v.fecha_ingreso);
-        return fechaVisita.toLocaleDateString('es-CO') === fechaHoy;
-      } catch {
+    const rangoFechas = obtenerRangoFechas(
+      filtrosAplicados.periodo,
+      filtrosAplicados.fechaInicioPersonalizada,
+      filtrosAplicados.fechaFinPersonalizada,
+      ultimaActualizacion
+    );
+    const busqueda = filtrosAplicados.textoBusqueda.toLowerCase();
+
+    return todasLasVisitas.filter((visita) => {
+      if (filtrosAplicados.filtroRol !== 'todos' && visita.rol !== filtrosAplicados.filtroRol) {
         return false;
       }
+
+      if (busqueda) {
+        const coincideNombre = visita.nombre_completo?.toLowerCase().includes(busqueda);
+        const coincideCedula = String(visita.cedula ?? '').toLowerCase().includes(busqueda);
+        if (!coincideNombre && !coincideCedula) {
+          return false;
+        }
+      }
+
+      const fechaVisita = parsearFechaLocal(visita.fecha_ingreso);
+      if (!fechaVisita) return false;
+
+      return isWithinInterval(fechaVisita, {
+        start: rangoFechas.inicio,
+        end: rangoFechas.fin,
+      });
     });
-  };
+  }, [todasLasVisitas, filtrosAplicados, ultimaActualizacion]);
 
-  const entradasHoy = obtenerEntradasHoy();
-  const totalEntradasHoy = entradasHoy.length;
-  const visitantesUnicosHoy = new Set(entradasHoy.map(v => v.cedula)).size;
+  // Métricas y gráficas para la pestaña "Estadísticas" (calculadas una sola vez cuando cambian los datos)
+  const { totalEntradasHoy, visitantesUnicosHoy, datosPorRol, datosPorHora, datosPorDia } =
+    useMemo(() => {
+      if (todasLasVisitas.length === 0 || !ultimaActualizacion) {
+        return {
+          totalEntradasHoy: 0,
+          visitantesUnicosHoy: 0,
+          datosPorRol: [],
+          datosPorHora: [],
+          datosPorDia: [],
+        };
+      }
 
-  const datosPorRol = obtenerDatosPorRol();
-  const datosPorHora = obtenerDatosPorHora();
-  const datosPorDia = obtenerDatosPorDia();
+      let conteoEntradasHoy = 0;
+      const cedulasHoy = new Set();
+      const conteoRol = {};
+      const conteoPorHora = {};
+      const conteoPorDia = {};
+
+      for (const visita of todasLasVisitas) {
+        // KPIs del día actual
+        if (esMismoDia(visita.fecha_ingreso, ultimaActualizacion)) {
+          conteoEntradasHoy += 1;
+          if (visita.cedula) {
+            cedulasHoy.add(visita.cedula);
+          }
+        }
+
+        // Conteo por rol ('Empleado', 'Visitante', 'Proveedor', etc.)
+        const nombreRol = visita.rol || 'Sin rol';
+        conteoRol[nombreRol] = (conteoRol[nombreRol] || 0) + 1;
+
+        // Conteo por hora
+        if (typeof visita.hora_ingreso === 'string' && visita.hora_ingreso.length >= 2) {
+          const claveHora = `${visita.hora_ingreso.substring(0, 2)}:00`;
+          conteoPorHora[claveHora] = (conteoPorHora[claveHora] || 0) + 1;
+        }
+
+        // Conteo por día ordenable cronológicamente
+        const claveIsoDia = obtenerClaveDia(visita.fecha_ingreso);
+        if (claveIsoDia) {
+          if (!conteoPorDia[claveIsoDia]) {
+            conteoPorDia[claveIsoDia] = {
+              etiqueta: formatearFechaLegible(visita.fecha_ingreso),
+              cantidad: 0,
+            };
+          }
+          conteoPorDia[claveIsoDia].cantidad += 1;
+        }
+      }
+
+      const listaRoles = Object.entries(conteoRol)
+        .map(([nombre, valor]) => ({ nombre, valor }))
+        .filter((item) => item.valor > 0);
+
+      const listaHoras = Object.keys(conteoPorHora)
+        .sort()
+        .map((hora) => ({
+          hora,
+          cantidad: conteoPorHora[hora],
+        }));
+
+      const listaDias = Object.keys(conteoPorDia)
+        .sort()
+        .map((claveIso) => ({
+          dia: conteoPorDia[claveIso].etiqueta,
+          cantidad: conteoPorDia[claveIso].cantidad,
+        }));
+
+      return {
+        totalEntradasHoy: conteoEntradasHoy,
+        visitantesUnicosHoy: cedulasHoy.size,
+        datosPorRol: listaRoles,
+        datosPorHora: listaHoras,
+        datosPorDia: listaDias,
+      };
+    }, [todasLasVisitas, ultimaActualizacion]);
 
   return (
     <div className="dashboard-container">
@@ -221,52 +251,42 @@ const Dashboard = () => {
         <h1>Dashboard - Lira Seguridad</h1>
         <div className="header-actions">
           <span>Bienvenido, {usuario?.nombreUsuario}</span>
-          <button onClick={cargarVisitas} className="apply-filters-button" style={{ height: 'auto' }}>Actualizar</button>
-          <button onClick={cerrarSesion} className="logout-button">Cerrar Sesión</button>
+          <button
+            type="button"
+            onClick={cargarVisitas}
+            disabled={cargando}
+            className="refresh-button"
+          >
+            {cargando ? 'Actualizando...' : 'Actualizar'}
+          </button>
+          <button type="button" onClick={cerrarSesion} className="logout-button">
+            Cerrar Sesión
+          </button>
         </div>
       </header>
 
-      <div style={{ backgroundColor: '#fff', padding: '0 2rem', borderBottom: '2px solid #e2e8f0' }}>
-        <div style={{ display: 'flex', gap: '2rem' }}>
+      <nav className="tabs-bar" aria-label="Secciones del dashboard">
+        <div className="tabs-list">
           <button
-            onClick={() => {
-              setPestañaActiva('listado');
-              cargarVisitas();
-            }}
-            style={{
-              padding: '0.75rem 1.5rem',
-              background: 'none',
-              border: 'none',
-              borderBottom: pestañaActiva === 'listado' ? '3px solid #0066cc' : '3px solid transparent',
-              color: pestañaActiva === 'listado' ? '#0066cc' : '#4a5568',
-              fontWeight: pestañaActiva === 'listado' ? '600' : '400',
-              cursor: 'pointer',
-              fontSize: '0.95rem'
-            }}
+            type="button"
+            onClick={() => setPestanaActiva('listado')}
+            className={`tab-button ${pestanaActiva === 'listado' ? 'active' : ''}`}
           >
             Listado
           </button>
           <button
-            onClick={() => setPestañaActiva('estadisticas')}
-            style={{
-              padding: '0.75rem 1.5rem',
-              background: 'none',
-              border: 'none',
-              borderBottom: pestañaActiva === 'estadisticas' ? '3px solid #0066cc' : '3px solid transparent',
-              color: pestañaActiva === 'estadisticas' ? '#0066cc' : '#4a5568',
-              fontWeight: pestañaActiva === 'estadisticas' ? '600' : '400',
-              cursor: 'pointer',
-              fontSize: '0.95rem'
-            }}
+            type="button"
+            onClick={() => setPestanaActiva('estadisticas')}
+            className={`tab-button ${pestanaActiva === 'estadisticas' ? 'active' : ''}`}
           >
             Estadísticas
           </button>
         </div>
-      </div>
+      </nav>
 
-      {pestañaActiva === 'listado' && (
+      {pestanaActiva === 'listado' && (
         <>
-          <div className="filters-bar">
+          <form className="filters-bar" onSubmit={aplicarFiltros}>
             <div className="filter-group">
               <label htmlFor="busqueda">Buscar</label>
               <input
@@ -274,7 +294,7 @@ const Dashboard = () => {
                 id="busqueda"
                 placeholder="Nombre o cédula..."
                 value={textoBusqueda}
-                onChange={(e) => setTextoBusqueda(e.target.value)}
+                onChange={(evento) => setTextoBusqueda(evento.target.value)}
               />
             </div>
 
@@ -283,11 +303,11 @@ const Dashboard = () => {
               <select
                 id="rol"
                 value={filtroRol}
-                onChange={(e) => setFiltroRol(e.target.value)}
+                onChange={(evento) => setFiltroRol(evento.target.value)}
               >
                 <option value="todos">Todos</option>
                 <option value="Empleado">Empleado</option>
-                <option value="Visitante">Visitante</option>  
+                <option value="Visitante">Visitante</option>
                 <option value="Proveedor">Proveedor</option>
               </select>
             </div>
@@ -297,16 +317,12 @@ const Dashboard = () => {
               <select
                 id="periodo"
                 value={periodo}
-                onChange={(e) => setPeriodo(e.target.value)}
+                onChange={(evento) => setPeriodo(evento.target.value)}
               >
                 <option value="hoy">Hoy</option>
                 <option value="ayer">Ayer</option>
-                <option value="anteayer">Anteayer</option>
                 <option value="7dias">Últimos 7 días</option>
-                <option value="semana">Esta semana</option>
-                <option value="semanapasada">Semana pasada</option>
                 <option value="30dias">Últimos 30 días</option>
-                <option value="mes">Este mes</option>
                 <option value="personalizado">Personalizado</option>
               </select>
             </div>
@@ -319,7 +335,7 @@ const Dashboard = () => {
                     type="date"
                     id="fechaInicio"
                     value={fechaInicioPersonalizada}
-                    onChange={(e) => setFechaInicioPersonalizada(e.target.value)}
+                    onChange={(evento) => setFechaInicioPersonalizada(evento.target.value)}
                   />
                 </div>
                 <div className="filter-group">
@@ -328,19 +344,26 @@ const Dashboard = () => {
                     type="date"
                     id="fechaFin"
                     value={fechaFinPersonalizada}
-                    onChange={(e) => setFechaFinPersonalizada(e.target.value)}
+                    onChange={(evento) => setFechaFinPersonalizada(evento.target.value)}
                   />
                 </div>
               </>
             )}
 
-            <button onClick={aplicarFiltros} className="apply-filters-button">
-              Aplicar Filtros
-            </button>
-          </div>
+            <div className="filter-buttons">
+              <button type="submit" className="apply-filters-button">
+                Aplicar Filtros
+              </button>
+              <button type="button" onClick={limpiarFiltros} className="clear-filters-button">
+                Limpiar
+              </button>
+            </div>
+          </form>
 
           <main className="dashboard-content">
-            {cargando ? (
+            {errorCarga && <div className="error-banner">{errorCarga}</div>}
+
+            {cargando && todasLasVisitas.length === 0 ? (
               <p>Cargando...</p>
             ) : (
               <div className="table-container">
@@ -359,23 +382,28 @@ const Dashboard = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {visitas.length === 0 ? (
+                    {visitasFiltradas.length === 0 ? (
                       <tr>
-                        <td colSpan="9" style={{ textAlign: 'center' }}>
-                          No hay visitas para mostrar
+                        <td colSpan="9" className="empty-cell">
+                          No hay visitas para mostrar en el periodo seleccionado
                         </td>
                       </tr>
                     ) : (
-                      visitas.map((visita, indice) => (
-                        <tr key={indice}>
+                      visitasFiltradas.map((visita) => (
+                        <tr
+                          key={
+                            visita.id_registro ??
+                            `${visita.cedula}-${visita.fecha_ingreso}-${visita.hora_ingreso}`
+                          }
+                        >
                           <td>{visita.nombre_completo}</td>
                           <td>{visita.cedula}</td>
-                          <td>{visita.motivo}</td>
-                          <td>{visita.eps}</td>
+                          <td>{visita.motivo || '-'}</td>
+                          <td>{visita.eps || 'N/A'}</td>
                           <td>{visita.arl || 'N/A'}</td>
-                          <td>{visita.telefono}</td>
+                          <td>{visita.telefono || '-'}</td>
                           <td>{visita.rol}</td>
-                          <td>{visita.fecha_ingreso}</td>
+                          <td>{formatearFechaLegible(visita.fecha_ingreso)}</td>
                           <td>{visita.hora_ingreso}</td>
                         </tr>
                       ))
@@ -388,33 +416,35 @@ const Dashboard = () => {
         </>
       )}
 
-      {pestañaActiva === 'estadisticas' && (
+      {pestanaActiva === 'estadisticas' && (
         <main className="dashboard-content">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+          {errorCarga && <div className="error-banner">{errorCarga}</div>}
+
+          <div className="stats-header">
             <div>
-              <h2 style={{ margin: 0, fontSize: '1.3rem' }}>Estadísticas de visitas</h2>
-              <p style={{ margin: '0.25rem 0 0 0', fontSize: '0.8rem', color: '#718096' }}>
-                Última actualización: {ultimaActualizacion.toLocaleTimeString('es-CO')} - Se actualiza automáticamente cada 5 minutos
+              <h2 className="stats-title">Estadísticas de visitas</h2>
+              <p className="stats-subtitle">
+                {ultimaActualizacion
+                  ? `Última actualización: ${ultimaActualizacion.toLocaleTimeString('es-CO')} — Se actualiza automáticamente cada 5 minutos`
+                  : 'Cargando datos...'}
               </p>
             </div>
           </div>
 
-          <div style={{ marginBottom: '1.5rem' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '1rem' }}>
-              <div style={{ backgroundColor: '#fff', padding: '1.5rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', borderLeft: '4px solid #0066cc' }}>
-                <p style={{ color: '#718096', fontSize: '0.875rem', marginBottom: '0.5rem' }}>Entradas hoy</p>
-                <p style={{ fontSize: '2rem', fontWeight: '600', color: '#1a202c', margin: 0 }}>{totalEntradasHoy}</p>
-              </div>
-              <div style={{ backgroundColor: '#fff', padding: '1.5rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', borderLeft: '4px solid #38a169' }}>
-                <p style={{ color: '#718096', fontSize: '0.875rem', marginBottom: '0.5rem' }}>Visitantes únicos hoy</p>
-                <p style={{ fontSize: '2rem', fontWeight: '600', color: '#1a202c', margin: 0 }}>{visitantesUnicosHoy}</p>
-              </div>
+          <div className="kpi-grid">
+            <div className="kpi-card">
+              <p className="kpi-label">Entradas hoy</p>
+              <p className="kpi-value">{totalEntradasHoy}</p>
+            </div>
+            <div className="kpi-card kpi-card--green">
+              <p className="kpi-label">Visitantes únicos hoy</p>
+              <p className="kpi-value">{visitantesUnicosHoy}</p>
             </div>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: '1.5rem' }}>
-            <div style={{ backgroundColor: '#fff', padding: '1.5rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-              <h3 style={{ marginTop: 0, marginBottom: '1rem', fontSize: '1.1rem' }}>Entradas por rol</h3>
+          <div className="charts-grid">
+            <div className="chart-card">
+              <h3 className="chart-title">Entradas por rol</h3>
               {datosPorRol.length > 0 ? (
                 <ResponsiveContainer width="100%" height={300}>
                   <PieChart>
@@ -427,8 +457,8 @@ const Dashboard = () => {
                       outerRadius={80}
                       label
                     >
-                      {datosPorRol.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={COLORES[index % COLORES.length]} />
+                      {datosPorRol.map((entrada, indice) => (
+                        <Cell key={entrada.nombre} fill={COLORES[indice % COLORES.length]} />
                       ))}
                     </Pie>
                     <Tooltip />
@@ -436,12 +466,12 @@ const Dashboard = () => {
                   </PieChart>
                 </ResponsiveContainer>
               ) : (
-                <p style={{ textAlign: 'center', color: '#718096' }}>Sin datos</p>
+                <p className="chart-empty">Sin datos</p>
               )}
             </div>
 
-            <div style={{ backgroundColor: '#fff', padding: '1.5rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-              <h3 style={{ marginTop: 0, marginBottom: '1rem', fontSize: '1.1rem' }}>Entradas por hora</h3>
+            <div className="chart-card">
+              <h3 className="chart-title">Entradas por hora</h3>
               {datosPorHora.length > 0 ? (
                 <ResponsiveContainer width="100%" height={300}>
                   <BarChart data={datosPorHora}>
@@ -453,12 +483,12 @@ const Dashboard = () => {
                   </BarChart>
                 </ResponsiveContainer>
               ) : (
-                <p style={{ textAlign: 'center', color: '#718096' }}>Sin datos</p>
+                <p className="chart-empty">Sin datos</p>
               )}
             </div>
 
-            <div style={{ backgroundColor: '#fff', padding: '1.5rem', borderRadius: '8px', boxShadow: '0 1px 3px rgba(0,0,0,0.1)', gridColumn: '1 / -1' }}>
-              <h3 style={{ marginTop: 0, marginBottom: '1rem', fontSize: '1.1rem' }}>Entradas por día</h3>
+            <div className="chart-card chart-card--full">
+              <h3 className="chart-title">Entradas por día</h3>
               {datosPorDia.length > 0 ? (
                 <ResponsiveContainer width="100%" height={300}>
                   <BarChart data={datosPorDia}>
@@ -470,7 +500,7 @@ const Dashboard = () => {
                   </BarChart>
                 </ResponsiveContainer>
               ) : (
-                <p style={{ textAlign: 'center', color: '#718096' }}>Sin datos</p>
+                <p className="chart-empty">Sin datos</p>
               )}
             </div>
           </div>
