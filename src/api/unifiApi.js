@@ -109,4 +109,53 @@ export const crearPersona = async (datosPersona) => {
   }
 };
 
+/**
+ * BUSCAR PERSONA POR CÉDULA
+ * Permite autocompletar datos si la persona ya existe en la BD
+ */
+export const buscarPersonaPorCedula = async (cedula) => {
+  const respuesta = await api.get(`/personas/${encodeURIComponent(cedula)}`);
+  return respuesta.data;
+};
+
+/**
+ * LISTAR PUERTAS DE UNIFI ACCESS
+ */
+export const obtenerPuertasUnifi = async () => {
+  const respuesta = await api.get('/unifi/puertas');
+  return respuesta.data;
+};
+
+/**
+ * REGISTRAR INGRESO Y GENERAR CÓDIGO QR EN UNIFI ACCESS
+ */
+export const registrarIngresoConQr = async (datosIngresoQr) => {
+  const respuesta = await api.post('/visitas/con-qr', datosIngresoQr);
+  return respuesta.data;
+};
+
+/**
+ * OBTENER DETALLE E IMAGEN DEL QR DE UNA VISITA
+ */
+export const obtenerDetalleQrVisita = async (idRegistro) => {
+  const respuesta = await api.get(`/visitas/${idRegistro}/qr`);
+  return respuesta.data;
+};
+
+/**
+ * ENVIAR O REENVIAR CÓDIGO QR POR CORREO ELECTRÓNICO
+ */
+export const enviarQrVisitaCorreo = async (idRegistro, correo) => {
+  const respuesta = await api.post(`/visitas/${idRegistro}/qr/correo`, { correo });
+  return respuesta.data;
+};
+
+/**
+ * REVOCAR MANUALMENTE UN CÓDIGO QR ACTIVO EN UNIFI ACCESS
+ */
+export const revocarQrVisita = async (idRegistro) => {
+  const respuesta = await api.delete(`/visitas/${idRegistro}/qr`);
+  return respuesta.data;
+};
+
 export default api;

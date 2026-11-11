@@ -40,3 +40,21 @@ Este documento contiene la estructura detallada de las tablas que componen la ba
 | `contrasena_hash` | VARCHAR(255) | - | NO | Contraseña encriptada mediante bcrypt |
 | `activo` | TINYINT(1) | - | NO | Estado de la cuenta (`1` = activo, `0` = inactivo) |
 | `fecha_creacion` | TIMESTAMP | - | NO | Fecha y hora de creación del usuario |
+
+## 5. Tabla: Accesos QR (Integración UniFi Access)
+
+| Campo | Tipo de Dato | Llave | Null | Descripción |
+| :--- | :--- | :---: | :---: | :--- |
+| `id_qr` | INT | PK | NO | Identificador único de la credencial QR |
+| `id_registro` | INT | FK / UNIQUE | NO | Relación con el evento en `registros_ingreso` |
+| `unifi_visitor_id` | VARCHAR(64) | - | NO | ID del visitante generado en la consola UniFi Access |
+| `puertas_json` | TEXT | - | NO | Lista JSON de IDs de puertas asignadas al visitante |
+| `usos_actuales` | INT | - | NO | Cantidad de aperturas concedidas registradas (`0`, `1`, `2`) |
+| `max_usos` | INT | - | NO | Límite de aperturas antes de revocar el QR (por defecto `2`: entrada y salida) |
+| `eventos_vistos_json` | TEXT | - | SÍ | Lista JSON de IDs de eventos de apertura ya contabilizados |
+| `inicio_timestamp` | BIGINT | - | NO | Epoch en segundos del inicio de vigencia del QR |
+| `fin_timestamp` | BIGINT | - | NO | Epoch en segundos del fin de vigencia del QR (ej. `+3600` seg) |
+| `estado` | ENUM | - | NO | Estado del QR: `'ACTIVO'`, `'COMPLETADO'`, `'EXPIRADO'` o `'REVOCADO'` |
+| `qr_base64` | LONGTEXT | - | SÍ | Imagen PNG del QR con margen blanco (*quiet zone*) en formato Base64 |
+| `fecha_creacion` | TIMESTAMP | - | NO | Fecha y hora de emisión del QR |
+

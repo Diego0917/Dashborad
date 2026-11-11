@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   BarChart,
   Bar,
@@ -70,6 +71,7 @@ const construirParametrosFiltroServidor = (filtros) => {
 
 const Dashboard = () => {
   const { usuario, cerrarSesion } = useAuth();
+  const navegar = useNavigate();
 
   // Estados de los controles del formulario de filtros
   const [textoBusqueda, setTextoBusqueda] = useState(FILTROS_INICIALES.textoBusqueda);
@@ -94,6 +96,7 @@ const Dashboard = () => {
   const [errorCarga, setErrorCarga] = useState('');
   const [pestanaActiva, setPestanaActiva] = useState('listado');
   const [ultimaActualizacion, setUltimaActualizacion] = useState(null);
+  const [visitaDetalleModal, setVisitaDetalleModal] = useState(null);
 
   const consultarServidor = useCallback(async (filtrosActivos, pagina) => {
     const parametrosBase = construirParametrosFiltroServidor(filtrosActivos);
@@ -214,6 +217,57 @@ const Dashboard = () => {
 
   const irAPaginaSiguiente = () => {
     setPaginaActual((paginaPrevia) => Math.min(totalPaginas, paginaPrevia + 1));
+  };
+
+  const formatearTiempoVidaVisita = (visita) => {
+    if (!visita) return '1 hora (Estándar)';
+
+    const inicioSeg = Number(visita.inicio_timestamp);
+    const finSeg = Number(visita.fin_timestamp);
+
+    if (inicioSeg > 0 && finSeg > inicioSeg) {
+      const duracionMinutos = Math.round((finSeg - inicioSeg) / 60);
+      const horaInicio = new Date(inicioSeg * 1000).toLocaleTimeString('es-CO', {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      const horaFin = new Date(finSeg * 1000).toLocaleTimeString('es-CO', {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      const ahoraSeg = ultimaActualizacion
+        ? Math.floor(ultimaActualizacion.getTime() / 1000)
+        : 0;
+      const restanteMin = ahoraSeg > 0 ? Math.max(0, Math.ceil((finSeg - ahoraSeg) / 60)) : 0;
+
+      if (visita.estado_qr === 'ACTIVO' && restanteMin > 0) {
+        return `${formatearDuracionLegible(duracionMinutos)} (${horaInicio} - ${horaFin} · Quedan ${restanteMin} min)`;
+      }
+      return `${formatearDuracionLegible(duracionMinutos)} (${horaInicio} - ${horaFin})`;
+    }
+
+    return '1 hora (Ventana estándar desde el registro)';
+  };
+
+  const formatearAccesosVisita = (visita) => {
+    if (!visita) return '0 de 2 accesos (1 ingreso + 1 salida)';
+
+    if (visita.id_qr) {
+      const usados = Number(visita.usos_actuales) || 0;
+      const maximos = Number(visita.max_usos) || 2;
+      const estado = visita.estado_qr || 'ACTIVO';
+      if (usados === 0) {
+        return `0 de ${maximos} accesos (Esperando lectura del QR en cámara UniFi) · Estado: ${estado}`;
+      }
+      return `${usados} de ${maximos} accesos utilizados · Estado: ${estado}`;
+    }
+
+    const tieneEntrada = Boolean(visita.hora_ingreso);
+    const tieneSalida = Boolean(
+      visita.hora_salida && String(visita.hora_salida).trim() !== ''
+    );
+    const accesosRegistrados = (tieneEntrada ? 1 : 0) + (tieneSalida ? 1 : 0);
+    return `${accesosRegistrados} de 2 accesos (${tieneSalida ? 'Ingreso y salida completados' : '1 ingreso registrado, salida pendiente'})`;
   };
 
   // Métricas y gráficas para la pestaña "Estadísticas" basadas en la respuesta agregada del servidor
@@ -340,6 +394,13 @@ const Dashboard = () => {
           <span>Bienvenido, {usuario?.nombreUsuario}</span>
           <button
             type="button"
+            onClick={() => navegar('/invitacion')}
+            className="new-invitation-button"
+          >
+            + Nueva Invitación / QR
+          </button>
+          <button
+            type="button"
             onClick={cargarVisitas}
             disabled={cargando}
             className="refresh-button"
@@ -464,7 +525,6 @@ const Dashboard = () => {
                     <tr>
                       <th>Nombre completo</th>
                       <th>Cédula</th>
-                      <th>Motivo</th>
                       <th>EPS</th>
                       <th>ARL</th>
                       <th>Teléfono</th>
@@ -477,16 +537,24 @@ const Dashboard = () => {
                   <tbody>
                     {visitasPagina.length === 0 ? (
                       <tr>
-                        <td colSpan="10" className="empty-cell">
+                        <td colSpan="9" className="empty-cell">
                           No hay visitas para mostrar en el periodo seleccionado
                         </td>
                       </tr>
                     ) : (
                       visitasPagina.map((visita) => {
+                        const esQrSinLlegada =
+                          Boolean(visita.id_qr) && Number(visita.usos_actuales) === 0;
+                        const haIngresado =
+                          !esQrSinLlegada &&
+                          Boolean(
+                            visita.hora_ingreso && String(visita.hora_ingreso).trim() !== ''
+                          );
                         const tieneSalida = Boolean(
                           visita.hora_salida && String(visita.hora_salida).trim() !== ''
                         );
                         const sigueEnEdificioHoy =
+                          haIngresado &&
                           !tieneSalida &&
                           ultimaActualizacion &&
                           esMismoDia(visita.fecha_ingreso, ultimaActualizacion);
@@ -499,17 +567,44 @@ const Dashboard = () => {
                             }
                           >
                             <td>{visita.nombre_completo}</td>
-                            <td>{visita.cedula}</td>
-                            <td>{visita.motivo || '-'}</td>
+                            <td>
+                              <a
+                                href={`#detalle-${visita.id_registro || visita.cedula}`}
+                                className="cedula-link"
+                                title="Haz clic para ver motivo de visita, accesos y tiempo de vida"
+                                onClick={(evento) => {
+                                  evento.preventDefault();
+                                  setVisitaDetalleModal(visita);
+                                }}
+                              >
+                                {visita.cedula}
+                              </a>
+                            </td>
                             <td>{visita.eps || 'N/A'}</td>
                             <td>{visita.arl || 'N/A'}</td>
                             <td>{visita.telefono || '-'}</td>
                             <td>{visita.rol}</td>
                             <td>{formatearFechaLegible(visita.fecha_ingreso)}</td>
-                            <td>{visita.hora_ingreso}</td>
+                            <td>
+                              {haIngresado ? (
+                                visita.hora_ingreso
+                              ) : (
+                                <span className="texto-pendiente">Sin ingresar aún</span>
+                              )}
+                            </td>
                             <td>
                               {tieneSalida ? (
                                 visita.hora_salida
+                              ) : esQrSinLlegada ? (
+                                visita.estado_qr === 'EXPIRADO' ? (
+                                  <span className="badge-qr-expirado">QR Expirado (No llegó)</span>
+                                ) : visita.estado_qr === 'REVOCADO' ? (
+                                  <span className="badge-qr-expirado">QR Cancelado</span>
+                                ) : (
+                                  <span className="badge-esperando-llegada">
+                                    Esperando llegada (QR)
+                                  </span>
+                                )
                               ) : sigueEnEdificioHoy ? (
                                 <span className="badge-en-edificio">En el edificio</span>
                               ) : (
@@ -554,6 +649,93 @@ const Dashboard = () => {
                 </div>
               </div>
             </>
+          )}
+
+          {visitaDetalleModal && (
+            <div
+              className="modal-overlay"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="modal-detalle-titulo"
+              onClick={() => setVisitaDetalleModal(null)}
+            >
+              <div
+                className="modal-card"
+                onClick={(evento) => evento.stopPropagation()}
+              >
+                <div className="modal-header">
+                  <div>
+                    <h3 id="modal-detalle-titulo" className="modal-title">
+                      Detalle de Ingreso — C.C. {visitaDetalleModal.cedula}
+                    </h3>
+                    <p className="modal-subtitle">
+                      {visitaDetalleModal.nombre_completo} ({visitaDetalleModal.rol})
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="modal-close-button"
+                    aria-label="Cerrar detalle"
+                    onClick={() => setVisitaDetalleModal(null)}
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <div className="modal-body">
+                  <div className="modal-detail-item">
+                    <span className="modal-detail-label">Motivo de la visita</span>
+                    <p className="modal-detail-value">
+                      {visitaDetalleModal.motivo || 'Sin motivo registrado'}
+                    </p>
+                  </div>
+
+                  <div className="modal-detail-item">
+                    <span className="modal-detail-label">Accesos del QR</span>
+                    <p className="modal-detail-value">
+                      {formatearAccesosVisita(visitaDetalleModal)}
+                    </p>
+                  </div>
+
+                  <div className="modal-detail-item">
+                    <span className="modal-detail-label">Tiempo de vida del QR</span>
+                    <p className="modal-detail-value">
+                      {formatearTiempoVidaVisita(visitaDetalleModal)}
+                    </p>
+                  </div>
+
+                  <div className="modal-detail-grid">
+                    <div>
+                      <span className="modal-detail-label">Fecha de ingreso</span>
+                      <p className="modal-detail-value">
+                        {formatearFechaLegible(visitaDetalleModal.fecha_ingreso)}
+                      </p>
+                    </div>
+                    <div>
+                      <span className="modal-detail-label">Hora entrada / salida</span>
+                      <p className="modal-detail-value">
+                        {Boolean(visitaDetalleModal.id_qr) &&
+                        Number(visitaDetalleModal.usos_actuales) === 0
+                          ? 'Pendiente de lectura del QR en cámara UniFi'
+                          : `${visitaDetalleModal.hora_ingreso || '--'} — ${
+                              visitaDetalleModal.hora_salida || 'En el edificio / Sin salida'
+                            }`}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="modal-footer">
+                  <button
+                    type="button"
+                    className="apply-filters-button"
+                    onClick={() => setVisitaDetalleModal(null)}
+                  >
+                    Cerrar
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
         </main>
       )}

@@ -26,7 +26,7 @@ CREATE TABLE registros_ingreso (
     cedula VARCHAR(20) NOT NULL,
     motivo VARCHAR(255),
     fecha_ingreso DATE NOT NULL DEFAULT (CURRENT_DATE),
-    hora_ingreso TIME NOT NULL DEFAULT (CURRENT_TIME),
+    hora_ingreso TIME NULL DEFAULT (CURRENT_TIME),
     hora_salida TIME NULL,
     INDEX idx_registros_fecha_hora (fecha_ingreso, hora_ingreso),
     INDEX idx_registros_cedula (cedula),
@@ -45,4 +45,23 @@ CREATE TABLE IF NOT EXISTS usuarios (
     contrasena_hash VARCHAR(255) NOT NULL,
     activo TINYINT(1) NOT NULL DEFAULT 1,
     fecha_creacion TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+--Creacion tabla accesos_qr (control de tiempo de vida y usos de QR en UniFi Access)
+CREATE TABLE IF NOT EXISTS accesos_qr (
+    id_qr INT AUTO_INCREMENT PRIMARY KEY,
+    id_registro INT NOT NULL UNIQUE,
+    unifi_visitor_id VARCHAR(64) NOT NULL,
+    puertas_json TEXT NOT NULL,
+    usos_actuales INT NOT NULL DEFAULT 0,
+    max_usos INT NOT NULL DEFAULT 2,
+    eventos_vistos_json TEXT NULL,
+    inicio_timestamp BIGINT NOT NULL,
+    fin_timestamp BIGINT NOT NULL,
+    estado ENUM('ACTIVO', 'COMPLETADO', 'EXPIRADO', 'REVOCADO') NOT NULL DEFAULT 'ACTIVO',
+    qr_base64 LONGTEXT NULL,
+    fecha_creacion TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_accesos_qr_estado (estado),
+    INDEX idx_accesos_qr_visitor (unifi_visitor_id),
+    CONSTRAINT fk_qr_registro FOREIGN KEY (id_registro) REFERENCES registros_ingreso(id_registro) ON DELETE CASCADE
 );

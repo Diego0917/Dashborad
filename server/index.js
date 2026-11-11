@@ -5,6 +5,18 @@ const mysql = require('mysql2/promise');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const {
+  obtenerConfiguracionUnifi,
+  dividirNombreCompleto,
+  crearVisitanteUnifi,
+  eliminarVisitanteUnifi,
+  listarPuertasUnifi,
+  generarQrVisitanteUnifi,
+  obtenerLogsVisitanteUnifi,
+  esAccesoConcedidoUnifi,
+  obtenerPuertaDeEventoUnifi,
+  enviarQrPorCorreo,
+} = require('./unifiAccess');
 
 // Carga automática de server/.env si existe (soportado nativamente en Node >= 20.12)
 const rutaArchivoEnv = path.join(__dirname, '.env');
@@ -45,7 +57,7 @@ const poolBaseDatos = mysql.createPool({
   port: Number(process.env.PUERTO_BD) || 3306,
   user: process.env.USUARIO_BD || 'root',
   password: process.env.CONTRASENA_BD ?? '',
-  database: process.env.NOMBRE_BD || 'db_inregrsolira',
+  database: process.env.NOMBRE_BD || 'ingreso_lira',
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
@@ -85,12 +97,52 @@ const asegurarTablaUsuarios = async () => {
   }
 };
 
+const asegurarTablaAccesosQr = async () => {
+  await poolBaseDatos.query(`
+    CREATE TABLE IF NOT EXISTS accesos_qr (
+      id_qr INT AUTO_INCREMENT PRIMARY KEY,
+      id_registro INT NOT NULL UNIQUE,
+      unifi_visitor_id VARCHAR(64) NOT NULL,
+      puertas_json TEXT NOT NULL,
+      usos_actuales INT NOT NULL DEFAULT 0,
+      max_usos INT NOT NULL DEFAULT 2,
+      eventos_vistos_json TEXT NULL,
+      inicio_timestamp BIGINT NOT NULL,
+      fin_timestamp BIGINT NOT NULL,
+      estado ENUM('ACTIVO', 'COMPLETADO', 'EXPIRADO', 'REVOCADO') NOT NULL DEFAULT 'ACTIVO',
+      qr_base64 LONGTEXT NULL,
+      fecha_creacion TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_accesos_qr_estado (estado),
+      INDEX idx_accesos_qr_visitor (unifi_visitor_id),
+      CONSTRAINT fk_qr_registro FOREIGN KEY (id_registro) REFERENCES registros_ingreso(id_registro) ON DELETE CASCADE
+    );
+  `);
+
+  // Permitir hora_ingreso NULL para invitaciones con QR que aún no han sido leídas en cámara UniFi
+  await poolBaseDatos
+    .query(
+      'ALTER TABLE registros_ingreso MODIFY COLUMN hora_ingreso TIME NULL DEFAULT (CURRENT_TIME)'
+    )
+    .catch(() => {});
+
+  // Si existen registros con QR sin usos (0 lecturas en cámara), dejar hora_ingreso en NULL hasta que llegue la persona
+  await poolBaseDatos
+    .query(`
+      UPDATE registros_ingreso
+      INNER JOIN accesos_qr ON accesos_qr.id_registro = registros_ingreso.id_registro
+      SET registros_ingreso.hora_ingreso = NULL
+      WHERE accesos_qr.usos_actuales = 0 AND registros_ingreso.hora_salida IS NULL
+    `)
+    .catch(() => {});
+};
+
 const verificarConexionInicial = async () => {
   try {
     const conexion = await poolBaseDatos.getConnection();
     conexion.release();
     console.log('¡Conectado exitosamente al pool de la base de datos MySQL!');
     await asegurarTablaUsuarios();
+    await asegurarTablaAccesosQr();
   } catch (errorConexion) {
     console.error('Error al conectar a la base de datos:', errorConexion.message);
   }
@@ -285,12 +337,23 @@ aplicacion.get('/api/visitas', verificarTokenJwt, async (solicitud, respuesta) =
         registros_ingreso.motivo,
         registros_ingreso.fecha_ingreso,
         registros_ingreso.hora_ingreso,
-        registros_ingreso.hora_salida
+        registros_ingreso.hora_salida,
+        accesos_qr.id_qr,
+        accesos_qr.unifi_visitor_id,
+        accesos_qr.estado AS estado_qr,
+        accesos_qr.usos_actuales,
+        accesos_qr.max_usos,
+        accesos_qr.inicio_timestamp,
+        accesos_qr.fin_timestamp
       FROM registros_ingreso
       INNER JOIN personas ON registros_ingreso.cedula = personas.cedula
       INNER JOIN roles ON personas.id_rol = roles.id_rol
+      LEFT JOIN accesos_qr ON registros_ingreso.id_registro = accesos_qr.id_registro
       ${clausulaWhere}
-      ORDER BY registros_ingreso.fecha_ingreso DESC, registros_ingreso.hora_ingreso DESC
+      ORDER BY
+        registros_ingreso.fecha_ingreso DESC,
+        COALESCE(registros_ingreso.hora_ingreso, '23:59:59') DESC,
+        registros_ingreso.id_registro DESC
       LIMIT ? OFFSET ?;
     `;
 
@@ -340,11 +403,27 @@ aplicacion.get('/api/visitas/estadisticas', verificarTokenJwt, async (solicitud,
     const consultaPorRolSql = `
       SELECT
         roles.nombre_rol AS rol,
-        COUNT(*) AS total_entradas,
-        COUNT(DISTINCT registros_ingreso.cedula) AS visitantes_unicos,
         SUM(
           CASE
-            WHEN registros_ingreso.hora_salida IS NULL
+            WHEN (accesos_qr.id_qr IS NULL OR accesos_qr.usos_actuales >= 1)
+              AND registros_ingreso.hora_ingreso IS NOT NULL
+            THEN 1
+            ELSE 0
+          END
+        ) AS total_entradas,
+        COUNT(
+          DISTINCT CASE
+            WHEN (accesos_qr.id_qr IS NULL OR accesos_qr.usos_actuales >= 1)
+              AND registros_ingreso.hora_ingreso IS NOT NULL
+            THEN registros_ingreso.cedula
+            ELSE NULL
+          END
+        ) AS visitantes_unicos,
+        SUM(
+          CASE
+            WHEN (accesos_qr.id_qr IS NULL OR accesos_qr.usos_actuales >= 1)
+              AND registros_ingreso.hora_ingreso IS NOT NULL
+              AND registros_ingreso.hora_salida IS NULL
               AND registros_ingreso.fecha_ingreso = CURRENT_DATE
             THEN 1
             ELSE 0
@@ -352,7 +431,9 @@ aplicacion.get('/api/visitas/estadisticas', verificarTokenJwt, async (solicitud,
         ) AS en_edificio_hoy,
         SUM(
           CASE
-            WHEN registros_ingreso.hora_salida IS NULL
+            WHEN (accesos_qr.id_qr IS NULL OR accesos_qr.usos_actuales >= 1)
+              AND registros_ingreso.hora_ingreso IS NOT NULL
+              AND registros_ingreso.hora_salida IS NULL
               AND registros_ingreso.fecha_ingreso < CURRENT_DATE
             THEN 1
             ELSE 0
@@ -360,7 +441,8 @@ aplicacion.get('/api/visitas/estadisticas', verificarTokenJwt, async (solicitud,
         ) AS sin_salida_anteriores,
         SUM(
           CASE
-            WHEN registros_ingreso.hora_salida IS NOT NULL
+            WHEN registros_ingreso.hora_ingreso IS NOT NULL
+              AND registros_ingreso.hora_salida IS NOT NULL
               AND registros_ingreso.hora_salida >= registros_ingreso.hora_ingreso
             THEN TIME_TO_SEC(TIMEDIFF(registros_ingreso.hora_salida, registros_ingreso.hora_ingreso)) / 60
             ELSE 0
@@ -368,7 +450,8 @@ aplicacion.get('/api/visitas/estadisticas', verificarTokenJwt, async (solicitud,
         ) AS suma_minutos,
         SUM(
           CASE
-            WHEN registros_ingreso.hora_salida IS NOT NULL
+            WHEN registros_ingreso.hora_ingreso IS NOT NULL
+              AND registros_ingreso.hora_salida IS NOT NULL
               AND registros_ingreso.hora_salida >= registros_ingreso.hora_ingreso
             THEN 1
             ELSE 0
@@ -377,9 +460,15 @@ aplicacion.get('/api/visitas/estadisticas', verificarTokenJwt, async (solicitud,
       FROM registros_ingreso
       INNER JOIN personas ON registros_ingreso.cedula = personas.cedula
       INNER JOIN roles ON personas.id_rol = roles.id_rol
+      LEFT JOIN accesos_qr ON registros_ingreso.id_registro = accesos_qr.id_registro
       ${clausulaWhere}
       GROUP BY roles.nombre_rol;
     `;
+
+    const condicionIngresados =
+      clausulaWhere.length > 0
+        ? `${clausulaWhere} AND (accesos_qr.id_qr IS NULL OR accesos_qr.usos_actuales >= 1) AND registros_ingreso.hora_ingreso IS NOT NULL`
+        : 'WHERE (accesos_qr.id_qr IS NULL OR accesos_qr.usos_actuales >= 1) AND registros_ingreso.hora_ingreso IS NOT NULL';
 
     const consultaPorHoraSql = `
       SELECT
@@ -388,7 +477,8 @@ aplicacion.get('/api/visitas/estadisticas', verificarTokenJwt, async (solicitud,
       FROM registros_ingreso
       INNER JOIN personas ON registros_ingreso.cedula = personas.cedula
       INNER JOIN roles ON personas.id_rol = roles.id_rol
-      ${clausulaWhere}
+      LEFT JOIN accesos_qr ON registros_ingreso.id_registro = accesos_qr.id_registro
+      ${condicionIngresados}
       GROUP BY hora
       ORDER BY hora ASC;
     `;
@@ -400,7 +490,8 @@ aplicacion.get('/api/visitas/estadisticas', verificarTokenJwt, async (solicitud,
       FROM registros_ingreso
       INNER JOIN personas ON registros_ingreso.cedula = personas.cedula
       INNER JOIN roles ON personas.id_rol = roles.id_rol
-      ${clausulaWhere}
+      LEFT JOIN accesos_qr ON registros_ingreso.id_registro = accesos_qr.id_registro
+      ${condicionIngresados}
       GROUP BY registros_ingreso.fecha_ingreso
       ORDER BY registros_ingreso.fecha_ingreso ASC;
     `;
@@ -552,11 +643,573 @@ aplicacion.post('/api/personas', async (solicitud, respuesta) => {
   }
 });
 
+// Ruta para buscar una persona por cédula (autocompletado en formulario de validación/invitación)
+aplicacion.get('/api/personas/:cedula', async (solicitud, respuesta) => {
+  try {
+    const cedulaLimpia = String(solicitud.params.cedula ?? '').trim();
+    if (!cedulaLimpia) {
+      return respuesta.status(400).json({ error: 'La cédula es obligatoria' });
+    }
+
+    const [filas] = await poolBaseDatos.query(
+      `SELECT
+        personas.cedula,
+        personas.nombre_completo,
+        personas.telefono,
+        personas.eps,
+        personas.arl,
+        personas.id_rol,
+        roles.nombre_rol AS rol
+       FROM personas
+       INNER JOIN roles ON personas.id_rol = roles.id_rol
+       WHERE personas.cedula = ?
+       LIMIT 1`,
+      [cedulaLimpia]
+    );
+
+    if (filas.length === 0) {
+      return respuesta.status(404).json({ error: 'Persona no encontrada' });
+    }
+
+    return respuesta.json(filas[0]);
+  } catch (errorBusqueda) {
+    console.error('Error al buscar persona por cédula:', errorBusqueda);
+    return respuesta.status(500).json({ error: 'Error al consultar la persona' });
+  }
+});
+
+// Ruta para listar puertas disponibles desde la consola UniFi Access
+aplicacion.get('/api/unifi/puertas', async (_solicitud, respuesta) => {
+  const configUnifi = obtenerConfiguracionUnifi();
+  try {
+    const puertas = await listarPuertasUnifi();
+    return respuesta.json({
+      puertas,
+      puertaDefecto: configUnifi.puertaDefecto,
+      conectado: true,
+    });
+  } catch (errorPuertas) {
+    console.warn('No se pudo listar puertas desde UniFi Access:', errorPuertas.message);
+    return respuesta.json({
+      puertas: [
+        {
+          id: configUnifi.puertaDefecto,
+          nombre: 'Puerta Principal / Gestión Humana (Por defecto)',
+          estado: 'configurada',
+        },
+      ],
+      puertaDefecto: configUnifi.puertaDefecto,
+      conectado: false,
+      advertencia: errorPuertas.message,
+    });
+  }
+});
+
+// Ruta para registrar los datos de validación de la persona, crear el ingreso y generar su código QR de invitación en UniFi Access
+aplicacion.post('/api/visitas/con-qr', async (solicitud, respuesta) => {
+  try {
+    const {
+      cedula,
+      nombre_completo,
+      telefono = null,
+      eps = null,
+      arl = null,
+      id_rol = 1,
+      motivo = '',
+      correo = '',
+      puertas = [],
+      ventanaSegundos,
+      maxUsos,
+    } = solicitud.body || {};
+
+    const cedulaLimpia = String(cedula ?? '').trim();
+    const nombreLimpio = String(nombre_completo ?? '').trim();
+    const idRolNumerico = Number(id_rol) || 1;
+    const correoLimpio = correo ? String(correo).trim() : '';
+
+    if (!cedulaLimpia || !nombreLimpio) {
+      return respuesta.status(400).json({
+        error: 'La cédula y el nombre completo son obligatorios en el formulario de validación.',
+      });
+    }
+
+    const telefonoLimpio = telefono ? String(telefono).trim() : null;
+    const epsLimpia = eps ? String(eps).trim() : null;
+    const arlLimpia = arl ? String(arl).trim() : null;
+
+    // 1) Guardar o actualizar la información de validación de la persona en la tabla personas
+    await poolBaseDatos.query(
+      `INSERT INTO personas (cedula, nombre_completo, telefono, eps, arl, id_rol)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         nombre_completo = VALUES(nombre_completo),
+         telefono = COALESCE(VALUES(telefono), personas.telefono),
+         eps = COALESCE(VALUES(eps), personas.eps),
+         arl = COALESCE(VALUES(arl), personas.arl),
+         id_rol = VALUES(id_rol)`,
+      [
+        cedulaLimpia,
+        nombreLimpio,
+        telefonoLimpio,
+        epsLimpia,
+        arlLimpia,
+        idRolNumerico,
+      ]
+    );
+
+    const datosPersona = {
+      cedula: cedulaLimpia,
+      nombre_completo: nombreLimpio,
+      telefono: telefonoLimpio,
+      eps: epsLimpia,
+      arl: arlLimpia,
+      id_rol: idRolNumerico,
+    };
+
+    // 2) Crear el visitante temporal en la consola UniFi Access y emitir su QR con quiet zone
+    const configUnifi = obtenerConfiguracionUnifi();
+    const { nombres, apellidos } = dividirNombreCompleto(datosPersona.nombre_completo);
+    const puertasSeleccionadas =
+      Array.isArray(puertas) && puertas.length > 0
+        ? puertas.filter(Boolean)
+        : [configUnifi.puertaDefecto];
+
+    const duracionVigencia =
+      Number(ventanaSegundos) >= 60 ? Number(ventanaSegundos) : configUnifi.ventanaSegundos;
+    const limiteUsos =
+      Number(maxUsos) >= 1 ? Number(maxUsos) : configUnifi.maxAccesos;
+
+    const motivoLimpio = motivo ? String(motivo).trim() : 'Visita autorizada';
+
+    const visitanteUnifi = await crearVisitanteUnifi({
+      nombres,
+      apellidos,
+      motivo: motivoLimpio,
+      telefono: datosPersona.telefono || '0000000000',
+      doorIds: puertasSeleccionadas,
+      email: correoLimpio,
+      ventanaSegundos: duracionVigencia,
+    });
+
+    let qrGenerado;
+    try {
+      qrGenerado = await generarQrVisitanteUnifi(visitanteUnifi.visitorId);
+    } catch (errorQr) {
+      // Si falla la emisión del QR, limpiamos el visitante en UniFi para no dejar huérfanos
+      await eliminarVisitanteUnifi(visitanteUnifi.visitorId, true).catch(() => {});
+      throw errorQr;
+    }
+
+    // 3) Guardar el registro de invitación (hora_ingreso queda NULL hasta que la cámara UniFi detecte el 1er escaneo del QR)
+    const [resultadoIngreso] = await poolBaseDatos.query(
+      'INSERT INTO registros_ingreso (cedula, motivo, hora_ingreso) VALUES (?, ?, NULL)',
+      [cedulaLimpia, motivoLimpio]
+    );
+
+    const idRegistro = resultadoIngreso.insertId;
+
+    const [resultadoQr] = await poolBaseDatos.query(
+      `INSERT INTO accesos_qr (
+        id_registro,
+        unifi_visitor_id,
+        puertas_json,
+        usos_actuales,
+        max_usos,
+        eventos_vistos_json,
+        inicio_timestamp,
+        fin_timestamp,
+        estado,
+        qr_base64
+      ) VALUES (?, ?, ?, 0, ?, '[]', ?, ?, 'ACTIVO', ?)`,
+      [
+        idRegistro,
+        visitanteUnifi.visitorId,
+        JSON.stringify(visitanteUnifi.puertasAsignadas),
+        limiteUsos,
+        visitanteUnifi.inicioTimestamp,
+        visitanteUnifi.finTimestamp,
+        qrGenerado.base64DataUrl,
+      ]
+    );
+
+    let estadoCorreo = { enviado: false, mensaje: null };
+    if (correoLimpio) {
+      try {
+        await enviarQrPorCorreo({
+          destinatario: correoLimpio,
+          qrBase64: qrGenerado.base64DataUrl,
+          nombreCompleto: datosPersona.nombre_completo,
+          cedula: cedulaLimpia,
+          motivo: motivoLimpio,
+          finTimestamp: visitanteUnifi.finTimestamp,
+          maxUsos: limiteUsos,
+        });
+        estadoCorreo = {
+          enviado: true,
+          mensaje: `Código QR enviado al correo ${correoLimpio}`,
+        };
+      } catch (errorEmail) {
+        estadoCorreo = {
+          enviado: false,
+          mensaje: errorEmail.message,
+        };
+      }
+    }
+
+    return respuesta.status(201).json({
+      mensaje: 'Datos de la persona guardados y código QR de invitación generado exitosamente',
+      id_registro: idRegistro,
+      id_qr: resultadoQr.insertId,
+      cedula: cedulaLimpia,
+      nombre_completo: datosPersona.nombre_completo,
+      motivo: motivoLimpio,
+      unifi_visitor_id: visitanteUnifi.visitorId,
+      estado_qr: 'ACTIVO',
+      usos_actuales: 0,
+      max_usos: limiteUsos,
+      inicio_timestamp: visitanteUnifi.inicioTimestamp,
+      fin_timestamp: visitanteUnifi.finTimestamp,
+      qr_base64: qrGenerado.base64DataUrl,
+      simulado: Boolean(visitanteUnifi.simulado),
+      correo: estadoCorreo,
+    });
+  } catch (errorConQr) {
+    console.error('Error al generar ingreso con QR:', errorConQr);
+    return respuesta.status(502).json({
+      error:
+        errorConQr.message ||
+        'No se pudo generar el código QR en la consola UniFi Access',
+    });
+  }
+});
+
+// Ruta para consultar el detalle e imagen del QR de un registro de ingreso
+aplicacion.get('/api/visitas/:idRegistro/qr', verificarTokenJwt, async (solicitud, respuesta) => {
+  try {
+    const idRegistro = Number(solicitud.params.idRegistro);
+    if (!Number.isInteger(idRegistro) || idRegistro <= 0) {
+      return respuesta.status(400).json({ error: 'Identificador de registro inválido' });
+    }
+
+    const [filas] = await poolBaseDatos.query(
+      `SELECT
+        accesos_qr.id_qr,
+        accesos_qr.id_registro,
+        accesos_qr.unifi_visitor_id,
+        accesos_qr.puertas_json,
+        accesos_qr.usos_actuales,
+        accesos_qr.max_usos,
+        accesos_qr.inicio_timestamp,
+        accesos_qr.fin_timestamp,
+        accesos_qr.estado AS estado_qr,
+        accesos_qr.qr_base64,
+        personas.cedula,
+        personas.nombre_completo,
+        registros_ingreso.motivo
+       FROM accesos_qr
+       INNER JOIN registros_ingreso ON accesos_qr.id_registro = registros_ingreso.id_registro
+       INNER JOIN personas ON registros_ingreso.cedula = personas.cedula
+       WHERE accesos_qr.id_registro = ?
+       LIMIT 1`,
+      [idRegistro]
+    );
+
+    if (filas.length === 0) {
+      return respuesta.status(404).json({
+        error: 'Este registro de ingreso no tiene un código QR asociado',
+      });
+    }
+
+    return respuesta.json(filas[0]);
+  } catch (errorDetalleQr) {
+    console.error('Error al obtener detalle del QR:', errorDetalleQr);
+    return respuesta.status(500).json({ error: 'Error al consultar el código QR' });
+  }
+});
+
+// Ruta para enviar o reenviar el código QR de una visita por correo electrónico
+aplicacion.post('/api/visitas/:idRegistro/qr/correo', async (solicitud, respuesta) => {
+  try {
+    const idRegistro = Number(solicitud.params.idRegistro);
+    const { correo } = solicitud.body || {};
+    const correoLimpio = String(correo ?? '').trim();
+
+    if (!Number.isInteger(idRegistro) || idRegistro <= 0) {
+      return respuesta.status(400).json({ error: 'Identificador de registro inválido' });
+    }
+    if (!correoLimpio) {
+      return respuesta
+        .status(400)
+        .json({ error: 'Debes indicar una dirección de correo electrónico' });
+    }
+
+    const [filas] = await poolBaseDatos.query(
+      `SELECT
+        accesos_qr.qr_base64,
+        accesos_qr.fin_timestamp,
+        accesos_qr.max_usos,
+        personas.cedula,
+        personas.nombre_completo,
+        registros_ingreso.motivo
+       FROM accesos_qr
+       INNER JOIN registros_ingreso ON accesos_qr.id_registro = registros_ingreso.id_registro
+       INNER JOIN personas ON registros_ingreso.cedula = personas.cedula
+       WHERE accesos_qr.id_registro = ?
+       LIMIT 1`,
+      [idRegistro]
+    );
+
+    if (filas.length === 0 || !filas[0].qr_base64) {
+      return respuesta
+        .status(404)
+        .json({ error: 'No se encontró la imagen QR para este ingreso' });
+    }
+
+    const fila = filas[0];
+    await enviarQrPorCorreo({
+      destinatario: correoLimpio,
+      qrBase64: fila.qr_base64,
+      nombreCompleto: fila.nombre_completo,
+      cedula: fila.cedula,
+      motivo: fila.motivo,
+      finTimestamp: fila.fin_timestamp,
+      maxUsos: fila.max_usos,
+    });
+
+    return respuesta.json({
+      mensaje: `Código QR enviado correctamente al correo ${correoLimpio}`,
+    });
+  } catch (errorCorreo) {
+    console.error('Error al enviar QR por correo:', errorCorreo);
+    return respuesta.status(502).json({
+      error: errorCorreo.message || 'No se pudo enviar el código QR por correo',
+    });
+  }
+});
+
+// Ruta para revocar manualmente un código QR antes de que venza
+aplicacion.delete('/api/visitas/:idRegistro/qr', verificarTokenJwt, async (solicitud, respuesta) => {
+  try {
+    const idRegistro = Number(solicitud.params.idRegistro);
+    if (!Number.isInteger(idRegistro) || idRegistro <= 0) {
+      return respuesta.status(400).json({ error: 'Identificador de registro inválido' });
+    }
+
+    const [filas] = await poolBaseDatos.query(
+      'SELECT id_qr, unifi_visitor_id, estado FROM accesos_qr WHERE id_registro = ? LIMIT 1',
+      [idRegistro]
+    );
+
+    if (filas.length === 0) {
+      return respuesta.status(404).json({ error: 'No existe un QR para este ingreso' });
+    }
+
+    const qrActual = filas[0];
+    if (qrActual.unifi_visitor_id) {
+      await eliminarVisitanteUnifi(qrActual.unifi_visitor_id, true).catch((err) => {
+        console.warn(
+          `Advertencia al eliminar visitante ${qrActual.unifi_visitor_id} en UniFi:`,
+          err.message
+        );
+      });
+    }
+
+    await poolBaseDatos.query(
+      "UPDATE accesos_qr SET estado = 'REVOCADO' WHERE id_qr = ?",
+      [qrActual.id_qr]
+    );
+
+    return respuesta.json({
+      mensaje: 'Credencial QR revocada y eliminada de UniFi Access correctamente',
+    });
+  } catch (errorRevocar) {
+    console.error('Error al revocar QR:', errorRevocar);
+    return respuesta.status(500).json({ error: 'Error al revocar el código QR' });
+  }
+});
+
+// ── MONITOR EN SEGUNDO PLANO: Control de Tiempo de Vida y Usos (1 Entrada + 1 Salida) ──
+let monitoreoEnCurso = false;
+
+const procesarCicloMonitoreoQr = async () => {
+  if (monitoreoEnCurso) return;
+  monitoreoEnCurso = true;
+
+  try {
+    const [qrsActivos] = await poolBaseDatos.query(
+      `SELECT
+        id_qr,
+        id_registro,
+        unifi_visitor_id,
+        usos_actuales,
+        max_usos,
+        eventos_vistos_json,
+        inicio_timestamp,
+        fin_timestamp
+       FROM accesos_qr
+       WHERE estado = 'ACTIVO'`
+    );
+
+    if (qrsActivos.length === 0) return;
+
+    const ahoraSegundos = Math.floor(Date.now() / 1000);
+
+    for (const qr of qrsActivos) {
+      try {
+        let eventosVistos = [];
+        try {
+          eventosVistos = JSON.parse(qr.eventos_vistos_json || '[]');
+          if (!Array.isArray(eventosVistos)) eventosVistos = [];
+        } catch {
+          eventosVistos = [];
+        }
+
+        const conjuntoVistos = new Set(eventosVistos);
+        let huboCambioEventos = false;
+
+        // Consultar logs de apertura de puerta en UniFi Access desde inicio_timestamp
+        try {
+          const eventos = await obtenerLogsVisitanteUnifi(
+            qr.unifi_visitor_id,
+            qr.inicio_timestamp
+          );
+
+          for (const ev of eventos) {
+            const evId = String(ev._id || ev.id || ev['@timestamp'] || '');
+            if (!evId || conjuntoVistos.has(evId)) continue;
+
+            if (esAccesoConcedidoUnifi(ev, qr.unifi_visitor_id)) {
+              conjuntoVistos.add(evId);
+              huboCambioEventos = true;
+              console.log(
+                `[Monitor QR] Acceso CONCEDIDO #${conjuntoVistos.size} para visitante ${qr.unifi_visitor_id} en '${obtenerPuertaDeEventoUnifi(ev)}'`
+              );
+            }
+          }
+        } catch (errorLogUnifi) {
+          // Si la consola UniFi no responde momentáneamente, aún verificamos expiración por tiempo
+          console.warn(
+            `[Monitor QR] No se pudieron leer logs de ${qr.unifi_visitor_id}: ${errorLogUnifi.message}`
+          );
+        }
+
+        const totalAccesosConcedidos = conjuntoVistos.size;
+
+        // Si la cámara UniFi detectó el primer acceso (Entrada) y aún no tenía hora_ingreso, registrarla ahora
+        if (totalAccesosConcedidos >= 1 && Number(qr.usos_actuales) === 0) {
+          await poolBaseDatos.query(
+            `UPDATE registros_ingreso
+             SET fecha_ingreso = CURRENT_DATE,
+                 hora_ingreso = COALESCE(hora_ingreso, CURRENT_TIME)
+             WHERE id_registro = ?`,
+            [qr.id_registro]
+          );
+        }
+
+        // Caso 1: Alcanzó el máximo de usos (ej. 1 entrada + 1 salida = 2 aperturas)
+        if (totalAccesosConcedidos >= qr.max_usos) {
+          console.log(
+            `[Monitor QR] Visitante ${qr.unifi_visitor_id} completó ${totalAccesosConcedidos}/${qr.max_usos} usos. Registrando salida y revocando QR...`
+          );
+
+          await eliminarVisitanteUnifi(qr.unifi_visitor_id, true).catch((err) => {
+            console.warn(
+              `[Monitor QR] Error al borrar visitante completado ${qr.unifi_visitor_id}:`,
+              err.message
+            );
+          });
+
+          await poolBaseDatos.query(
+            `UPDATE accesos_qr
+             SET usos_actuales = ?,
+                 eventos_vistos_json = ?,
+                 estado = 'COMPLETADO'
+             WHERE id_qr = ?`,
+            [
+              totalAccesosConcedidos,
+              JSON.stringify(Array.from(conjuntoVistos)),
+              qr.id_qr,
+            ]
+          );
+
+          // Registrar automáticamente la hora de salida en registros_ingreso
+          await poolBaseDatos.query(
+            `UPDATE registros_ingreso
+             SET hora_salida = CURRENT_TIME
+             WHERE id_registro = ? AND hora_salida IS NULL`,
+            [qr.id_registro]
+          );
+          continue;
+        }
+
+        // Caso 2: Venció la ventana de tiempo (ej. 1 hora) sin completar todos los usos
+        if (ahoraSegundos >= Number(qr.fin_timestamp)) {
+          console.log(
+            `[Monitor QR] Ventana de tiempo vencida para visitante ${qr.unifi_visitor_id}. Eliminando credencial en UniFi...`
+          );
+
+          await eliminarVisitanteUnifi(qr.unifi_visitor_id, true).catch((err) => {
+            console.warn(
+              `[Monitor QR] Error al borrar visitante expirado ${qr.unifi_visitor_id}:`,
+              err.message
+            );
+          });
+
+          await poolBaseDatos.query(
+            `UPDATE accesos_qr
+             SET usos_actuales = ?,
+                 eventos_vistos_json = ?,
+                 estado = 'EXPIRADO'
+             WHERE id_qr = ?`,
+            [
+              totalAccesosConcedidos,
+              JSON.stringify(Array.from(conjuntoVistos)),
+              qr.id_qr,
+            ]
+          );
+          continue;
+        }
+
+        // Caso 3: Hubo un nuevo uso (ej. Uso #1 = Entrada), actualizar contador en BD
+        if (huboCambioEventos && totalAccesosConcedidos !== qr.usos_actuales) {
+          await poolBaseDatos.query(
+            `UPDATE accesos_qr
+             SET usos_actuales = ?,
+                 eventos_vistos_json = ?
+             WHERE id_qr = ?`,
+            [
+              totalAccesosConcedidos,
+              JSON.stringify(Array.from(conjuntoVistos)),
+              qr.id_qr,
+            ]
+          );
+        }
+      } catch (errorItemQr) {
+        console.error(
+          `[Monitor QR] Error procesando QR #${qr.id_qr}:`,
+          errorItemQr.message
+        );
+      }
+    }
+  } catch (errorGeneralMonitor) {
+    console.error('[Monitor QR] Error en ciclo de monitoreo:', errorGeneralMonitor.message);
+  } finally {
+    monitoreoEnCurso = false;
+  }
+};
+
+const { pollIntervalMs } = obtenerConfiguracionUnifi();
+const intervaloMonitorQr = setInterval(
+  procesarCicloMonitoreoQr,
+  Math.max(pollIntervalMs, 3000)
+);
+
 const servidorHttp = aplicacion.listen(puertoServidor, () => {
   console.log(`Servidor backend corriendo en http://localhost:${puertoServidor}`);
 });
 
 const cerrarServidor = async () => {
+  clearInterval(intervaloMonitorQr);
   servidorHttp.close(async () => {
     try {
       await poolBaseDatos.end();

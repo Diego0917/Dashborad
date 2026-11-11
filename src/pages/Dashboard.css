@@ -242,6 +242,27 @@
   border-radius: 9999px;
 }
 
+.badge-esperando-llegada {
+  display: inline-block;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #2b6cb0;
+  background-color: #ebf8ff;
+  border: 1px solid #bee3f8;
+  border-radius: 9999px;
+}
+
+.badge-qr-expirado {
+  display: inline-block;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #9b2c2c;
+  background-color: #fed7d7;
+  border-radius: 9999px;
+}
+
 .texto-pendiente {
   color: #a0aec0;
   font-size: 0.85rem;
@@ -391,3 +412,328 @@
   color: #718096;
   padding: 2rem 0;
 }
+
+/* Hipervínculo en número de documento (Cédula) y modal de detalle */
+.cedula-link {
+  color: #0066cc;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.cedula-link:hover {
+  color: #004499;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(15, 23, 42, 0.55);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 1rem;
+  z-index: 1000;
+}
+
+.modal-card {
+  background-color: #ffffff;
+  border-radius: 8px;
+  width: 100%;
+  max-width: 520px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid #e2e8f0;
+  background-color: #f8fafc;
+}
+
+.modal-title {
+  margin: 0;
+  font-size: 1.15rem;
+  color: #1a202c;
+}
+
+.modal-subtitle {
+  margin: 0.25rem 0 0 0;
+  font-size: 0.875rem;
+  color: #4a5568;
+}
+
+.modal-close-button {
+  background: none;
+  border: none;
+  font-size: 1.15rem;
+  color: #718096;
+  cursor: pointer;
+  padding: 0.2rem 0.4rem;
+  line-height: 1;
+}
+
+.modal-close-button:hover {
+  color: #1a202c;
+}
+
+.modal-body {
+  padding: 1.25rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.modal-detail-item {
+  background-color: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-left: 4px solid #0066cc;
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+}
+
+.modal-detail-label {
+  display: block;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #718096;
+  margin-bottom: 0.25rem;
+}
+
+.modal-detail-value {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: #1a202c;
+}
+
+.modal-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  padding-top: 0.25rem;
+}
+
+.modal-footer {
+  padding: 0.85rem 1.5rem;
+  border-top: 1px solid #e2e8f0;
+  display: flex;
+  justify-content: flex-end;
+  background-color: #f8fafc;
+}
+
+.new-invitation-button {
+  padding: 0.5rem 1rem;
+  background-color: #38a169;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: background-color 0.2s;
+}
+
+.new-invitation-button:hover {
+  background-color: #2f855a;
+}
+
+.success-banner {
+  background-color: #c6f6d5;
+  color: #22543d;
+  border: 1px solid #68d391;
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  font-weight: 500;
+}
+
+.invitacion-grid {
+  display: grid;
+  grid-template-columns: 1.25fr 1fr;
+  gap: 1.5rem;
+  align-items: start;
+}
+
+@media (max-width: 960px) {
+  .invitacion-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.invitacion-card {
+  background-color: #ffffff;
+  border-radius: 8px;
+  padding: 1.5rem;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  border: 1px solid #e2e8f0;
+}
+
+.invitacion-card-subtitle {
+  margin-top: 0;
+  margin-bottom: 1.25rem;
+  color: #4a5568;
+  font-size: 0.9rem;
+}
+
+.invitacion-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.invitacion-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+@media (max-width: 640px) {
+  .invitacion-form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.invitacion-full {
+  grid-column: 1 / -1;
+}
+
+.invitacion-cedula-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.invitacion-cedula-row input {
+  flex: 1;
+}
+
+.invitacion-badge-ok {
+  display: inline-block;
+  margin-top: 0.35rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #22543d;
+  background-color: #c6f6d5;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  width: fit-content;
+}
+
+.invitacion-actions {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: flex-end;
+  padding-top: 0.5rem;
+}
+
+.invitacion-qr-card {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.invitacion-qr-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+
+.invitacion-qr-img-container {
+  background-color: #ffffff;
+  border: 2px solid #cbd5e0;
+  border-radius: 8px;
+  padding: 0.75rem;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.invitacion-qr-img {
+  width: 240px;
+  height: 240px;
+  image-rendering: pixelated;
+  display: block;
+}
+
+.invitacion-qr-meta {
+  width: 100%;
+  background-color: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 0.85rem 1rem;
+  font-size: 0.9rem;
+  color: #2d3748;
+}
+
+.invitacion-qr-meta p {
+  margin: 0.25rem 0;
+}
+
+.invitacion-qr-buttons {
+  display: flex;
+  gap: 0.75rem;
+  width: 100%;
+  justify-content: center;
+}
+
+.download-qr-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.55rem 1.2rem;
+  background-color: #0066cc;
+  color: #ffffff;
+  text-decoration: none;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 0.9rem;
+  transition: background-color 0.2s;
+}
+
+.download-qr-button:hover {
+  background-color: #0052a3;
+}
+
+.invitacion-email-resend {
+  width: 100%;
+  border-top: 1px solid #e2e8f0;
+  padding-top: 0.85rem;
+}
+
+.invitacion-email-resend label {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #4a5568;
+  margin-bottom: 0.4rem;
+}
+
+.invitacion-email-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.invitacion-email-row input {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #cbd5e0;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+.invitacion-qr-empty {
+  background-color: #f8fafc;
+  border: 1px dashed #cbd5e0;
+  border-radius: 8px;
+  padding: 2rem 1.25rem;
+  text-align: center;
+  color: #718096;
+  font-size: 0.92rem;
+}
+
