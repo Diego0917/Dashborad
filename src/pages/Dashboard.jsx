@@ -20,6 +20,8 @@ import {
   formatearFechaLegible,
   obtenerClaveDia,
   esMismoDia,
+  calcularDuracionMinutos,
+  formatearDuracionLegible,
 } from '../utils/dateHelpers';
 import { obtenerVisitas } from '../api/unifiApi';
 import './Dashboard.css';
@@ -168,82 +170,155 @@ const Dashboard = () => {
   }, [todasLasVisitas, filtrosAplicados, ultimaActualizacion]);
 
   // Métricas y gráficas para la pestaña "Estadísticas" (calculadas una sola vez cuando cambian los datos)
-  const { totalEntradasHoy, visitantesUnicosHoy, datosPorRol, datosPorHora, datosPorDia } =
-    useMemo(() => {
-      if (todasLasVisitas.length === 0 || !ultimaActualizacion) {
-        return {
-          totalEntradasHoy: 0,
-          visitantesUnicosHoy: 0,
-          datosPorRol: [],
-          datosPorHora: [],
-          datosPorDia: [],
-        };
-      }
-
-      let conteoEntradasHoy = 0;
-      const cedulasHoy = new Set();
-      const conteoRol = {};
-      const conteoPorHora = {};
-      const conteoPorDia = {};
-
-      for (const visita of todasLasVisitas) {
-        // KPIs del día actual
-        if (esMismoDia(visita.fecha_ingreso, ultimaActualizacion)) {
-          conteoEntradasHoy += 1;
-          if (visita.cedula) {
-            cedulasHoy.add(visita.cedula);
-          }
-        }
-
-        // Conteo por rol ('Empleado', 'Visitante', 'Proveedor', etc.)
-        const nombreRol = visita.rol || 'Sin rol';
-        conteoRol[nombreRol] = (conteoRol[nombreRol] || 0) + 1;
-
-        // Conteo por hora
-        if (typeof visita.hora_ingreso === 'string' && visita.hora_ingreso.length >= 2) {
-          const claveHora = `${visita.hora_ingreso.substring(0, 2)}:00`;
-          conteoPorHora[claveHora] = (conteoPorHora[claveHora] || 0) + 1;
-        }
-
-        // Conteo por día ordenable cronológicamente
-        const claveIsoDia = obtenerClaveDia(visita.fecha_ingreso);
-        if (claveIsoDia) {
-          if (!conteoPorDia[claveIsoDia]) {
-            conteoPorDia[claveIsoDia] = {
-              etiqueta: formatearFechaLegible(visita.fecha_ingreso),
-              cantidad: 0,
-            };
-          }
-          conteoPorDia[claveIsoDia].cantidad += 1;
-        }
-      }
-
-      const listaRoles = Object.entries(conteoRol)
-        .map(([nombre, valor]) => ({ nombre, valor }))
-        .filter((item) => item.valor > 0);
-
-      const listaHoras = Object.keys(conteoPorHora)
-        .sort()
-        .map((hora) => ({
-          hora,
-          cantidad: conteoPorHora[hora],
-        }));
-
-      const listaDias = Object.keys(conteoPorDia)
-        .sort()
-        .map((claveIso) => ({
-          dia: conteoPorDia[claveIso].etiqueta,
-          cantidad: conteoPorDia[claveIso].cantidad,
-        }));
-
+  const {
+    totalEntradasHoy,
+    visitantesUnicosHoy,
+    personasEnEdificioHoy,
+    detalleEnEdificio,
+    tiempoPromedioVisita,
+    detalleTiempoPromedio,
+    datosPorRol,
+    datosPorHora,
+    datosPorDia,
+  } = useMemo(() => {
+    if (todasLasVisitas.length === 0 || !ultimaActualizacion) {
       return {
-        totalEntradasHoy: conteoEntradasHoy,
-        visitantesUnicosHoy: cedulasHoy.size,
-        datosPorRol: listaRoles,
-        datosPorHora: listaHoras,
-        datosPorDia: listaDias,
+        totalEntradasHoy: 0,
+        visitantesUnicosHoy: 0,
+        personasEnEdificioHoy: 0,
+        detalleEnEdificio: 'Sin registros hoy',
+        tiempoPromedioVisita: '--',
+        detalleTiempoPromedio: 'Sin salidas registradas',
+        datosPorRol: [],
+        datosPorHora: [],
+        datosPorDia: [],
       };
-    }, [todasLasVisitas, ultimaActualizacion]);
+    }
+
+    let conteoEntradasHoy = 0;
+    let conteoEnEdificioHoy = 0;
+    let salidasPendientesAnteriores = 0;
+    const cedulasHoy = new Set();
+    const conteoEnEdificioPorRol = {};
+    const conteoRol = {};
+    const conteoPorHora = {};
+    const conteoPorDia = {};
+
+    let sumaMinutosPermanencia = 0;
+    let conteoVisitasCerradas = 0;
+    const duracionPorRol = {};
+
+    for (const visita of todasLasVisitas) {
+      const nombreRol = visita.rol || 'Sin rol';
+      const esIngresoDeHoy = esMismoDia(visita.fecha_ingreso, ultimaActualizacion);
+      const tieneSalida = Boolean(visita.hora_salida && String(visita.hora_salida).trim() !== '');
+
+      //  día actual y aforo activo
+      if (esIngresoDeHoy) {
+        conteoEntradasHoy += 1;
+        if (visita.cedula) {
+          cedulasHoy.add(visita.cedula);
+        }
+        if (!tieneSalida) {
+          conteoEnEdificioHoy += 1;
+          conteoEnEdificioPorRol[nombreRol] = (conteoEnEdificioPorRol[nombreRol] || 0) + 1;
+        }
+      } else if (!tieneSalida) {
+        salidasPendientesAnteriores += 1;
+      }
+
+      // Tiempo de permanencia (hora_salida - hora_ingreso)
+      if (tieneSalida) {
+        const duracionMinutos = calcularDuracionMinutos(visita.hora_ingreso, visita.hora_salida);
+        if (duracionMinutos !== null) {
+          sumaMinutosPermanencia += duracionMinutos;
+          conteoVisitasCerradas += 1;
+
+          if (!duracionPorRol[nombreRol]) {
+            duracionPorRol[nombreRol] = { suma: 0, cantidad: 0 };
+          }
+          duracionPorRol[nombreRol].suma += duracionMinutos;
+          duracionPorRol[nombreRol].cantidad += 1;
+        }
+      }
+
+      // Conteo por rol ('Empleado', 'Visitante', 'Proveedor', etc.)
+      conteoRol[nombreRol] = (conteoRol[nombreRol] || 0) + 1;
+
+      // Conteo por hora
+      if (typeof visita.hora_ingreso === 'string' && visita.hora_ingreso.length >= 2) {
+        const claveHora = `${visita.hora_ingreso.substring(0, 2)}:00`;
+        conteoPorHora[claveHora] = (conteoPorHora[claveHora] || 0) + 1;
+      }
+
+      // Conteo por día ordenable cronológicamente
+      const claveIsoDia = obtenerClaveDia(visita.fecha_ingreso);
+      if (claveIsoDia) {
+        if (!conteoPorDia[claveIsoDia]) {
+          conteoPorDia[claveIsoDia] = {
+            etiqueta: formatearFechaLegible(visita.fecha_ingreso),
+            cantidad: 0,
+          };
+        }
+        conteoPorDia[claveIsoDia].cantidad += 1;
+      }
+    }
+
+    const resumenRolesDentro = Object.entries(conteoEnEdificioPorRol)
+      .map(([rolActual, cantidad]) => `${cantidad} ${rolActual}`)
+      .join(' · ');
+
+    let textoDetalleEdificio = resumenRolesDentro || 'Nadie dentro actualmente';
+    if (salidasPendientesAnteriores > 0) {
+      textoDetalleEdificio += ` (${salidasPendientesAnteriores} sin salida de días previos)`;
+    }
+
+    const promedioGeneralMinutos =
+      conteoVisitasCerradas > 0 ? sumaMinutosPermanencia / conteoVisitasCerradas : null;
+
+    const promediosPorRolTexto = ['Visitante', 'Proveedor']
+      .filter((rolObjetivo) => duracionPorRol[rolObjetivo]?.cantidad > 0)
+      .map((rolObjetivo) => {
+        const datosRol = duracionPorRol[rolObjetivo];
+        return `${rolObjetivo}: ${formatearDuracionLegible(datosRol.suma / datosRol.cantidad)}`;
+      })
+      .join(' · ');
+
+    const textoDetallePromedio =
+      conteoVisitasCerradas === 0
+        ? 'Sin salidas registradas aún'
+        : promediosPorRolTexto || `Basado en ${conteoVisitasCerradas} salidas registradas`;
+
+    const listaRoles = Object.entries(conteoRol)
+      .map(([nombre, valor]) => ({ nombre, valor }))
+      .filter((item) => item.valor > 0);
+
+    const listaHoras = Object.keys(conteoPorHora)
+      .sort()
+      .map((hora) => ({
+        hora,
+        cantidad: conteoPorHora[hora],
+      }));
+
+    const listaDias = Object.keys(conteoPorDia)
+      .sort()
+      .map((claveIso) => ({
+        dia: conteoPorDia[claveIso].etiqueta,
+        cantidad: conteoPorDia[claveIso].cantidad,
+      }));
+
+    return {
+      totalEntradasHoy: conteoEntradasHoy,
+      visitantesUnicosHoy: cedulasHoy.size,
+      personasEnEdificioHoy: conteoEnEdificioHoy,
+      detalleEnEdificio: textoDetalleEdificio,
+      tiempoPromedioVisita: formatearDuracionLegible(promedioGeneralMinutos),
+      detalleTiempoPromedio: textoDetallePromedio,
+      datosPorRol: listaRoles,
+      datosPorHora: listaHoras,
+      datosPorDia: listaDias,
+    };
+  }, [todasLasVisitas, ultimaActualizacion]);
 
   return (
     <div className="dashboard-container">
@@ -378,35 +453,55 @@ const Dashboard = () => {
                       <th>Teléfono</th>
                       <th>Rol</th>
                       <th>Fecha</th>
-                      <th>Hora</th>
+                      <th>Entrada</th>
+                      <th>Salida</th>
                     </tr>
                   </thead>
                   <tbody>
                     {visitasFiltradas.length === 0 ? (
                       <tr>
-                        <td colSpan="9" className="empty-cell">
+                        <td colSpan="10" className="empty-cell">
                           No hay visitas para mostrar en el periodo seleccionado
                         </td>
                       </tr>
                     ) : (
-                      visitasFiltradas.map((visita) => (
-                        <tr
-                          key={
-                            visita.id_registro ??
-                            `${visita.cedula}-${visita.fecha_ingreso}-${visita.hora_ingreso}`
-                          }
-                        >
-                          <td>{visita.nombre_completo}</td>
-                          <td>{visita.cedula}</td>
-                          <td>{visita.motivo || '-'}</td>
-                          <td>{visita.eps || 'N/A'}</td>
-                          <td>{visita.arl || 'N/A'}</td>
-                          <td>{visita.telefono || '-'}</td>
-                          <td>{visita.rol}</td>
-                          <td>{formatearFechaLegible(visita.fecha_ingreso)}</td>
-                          <td>{visita.hora_ingreso}</td>
-                        </tr>
-                      ))
+                      visitasFiltradas.map((visita) => {
+                        const tieneSalida = Boolean(
+                          visita.hora_salida && String(visita.hora_salida).trim() !== ''
+                        );
+                        const sigueEnEdificioHoy =
+                          !tieneSalida &&
+                          ultimaActualizacion &&
+                          esMismoDia(visita.fecha_ingreso, ultimaActualizacion);
+
+                        return (
+                          <tr
+                            key={
+                              visita.id_registro ??
+                              `${visita.cedula}-${visita.fecha_ingreso}-${visita.hora_ingreso}`
+                            }
+                          >
+                            <td>{visita.nombre_completo}</td>
+                            <td>{visita.cedula}</td>
+                            <td>{visita.motivo || '-'}</td>
+                            <td>{visita.eps || 'N/A'}</td>
+                            <td>{visita.arl || 'N/A'}</td>
+                            <td>{visita.telefono || '-'}</td>
+                            <td>{visita.rol}</td>
+                            <td>{formatearFechaLegible(visita.fecha_ingreso)}</td>
+                            <td>{visita.hora_ingreso}</td>
+                            <td>
+                              {tieneSalida ? (
+                                visita.hora_salida
+                              ) : sigueEnEdificioHoy ? (
+                                <span className="badge-en-edificio">En el edificio</span>
+                              ) : (
+                                <span className="texto-pendiente">Sin registrar</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })
                     )}
                   </tbody>
                 </table>
@@ -439,6 +534,16 @@ const Dashboard = () => {
             <div className="kpi-card kpi-card--green">
               <p className="kpi-label">Visitantes únicos hoy</p>
               <p className="kpi-value">{visitantesUnicosHoy}</p>
+            </div>
+            <div className="kpi-card kpi-card--orange">
+              <p className="kpi-label">Actualmente en el edificio</p>
+              <p className="kpi-value">{personasEnEdificioHoy}</p>
+              <p className="kpi-detail">{detalleEnEdificio}</p>
+            </div>
+            <div className="kpi-card kpi-card--purple">
+              <p className="kpi-label">Tiempo promedio de visita</p>
+              <p className="kpi-value">{tiempoPromedioVisita}</p>
+              <p className="kpi-detail">{detalleTiempoPromedio}</p>
             </div>
           </div>
 

@@ -158,3 +158,67 @@ export const formatearFechaParaAPI = (fecha) => {
   const fechaValida = parsearFechaLocal(fecha);
   return fechaValida ? fechaValida.toISOString() : '';
 };
+
+/**
+ * Convierte una cadena de hora ('HH:MM' o 'HH:MM:SS') al total de segundos desde medianoche.
+ */
+export const convertirHoraASegundos = (cadenaHora) => {
+  if (!cadenaHora || typeof cadenaHora !== 'string') return null;
+  const partes = cadenaHora.trim().split(':');
+  if (partes.length < 2) return null;
+
+  const horas = Number(partes[0]);
+  const minutos = Number(partes[1]);
+  const segundos = partes[2] ? Number(partes[2]) : 0;
+
+  if (
+    Number.isNaN(horas) ||
+    Number.isNaN(minutos) ||
+    Number.isNaN(segundos) ||
+    horas < 0 ||
+    horas > 23 ||
+    minutos < 0 ||
+    minutos > 59 ||
+    segundos < 0 ||
+    segundos > 59
+  ) {
+    return null;
+  }
+
+  return horas * 3600 + minutos * 60 + segundos;
+};
+
+/**
+ * Calcula la duración en minutos entre hora_ingreso y hora_salida.
+ * Devuelve null si falta alguna hora o si la salida es anterior al ingreso.
+ */
+export const calcularDuracionMinutos = (horaIngreso, horaSalida) => {
+  const segundosIngreso = convertirHoraASegundos(horaIngreso);
+  const segundosSalida = convertirHoraASegundos(horaSalida);
+
+  if (segundosIngreso === null || segundosSalida === null) return null;
+  if (segundosSalida < segundosIngreso) return null;
+
+  return (segundosSalida - segundosIngreso) / 60;
+};
+
+/**
+ * Formatea una cantidad de minutos a un texto legible (ej. '45 min' o '1h 25m').
+ */
+export const formatearDuracionLegible = (minutosTotales) => {
+  if (minutosTotales === null || minutosTotales === undefined || Number.isNaN(minutosTotales)) {
+    return '--';
+  }
+
+  const minutosRedondeados = Math.round(minutosTotales);
+  if (minutosRedondeados < 1) {
+    return '< 1 min';
+  }
+  if (minutosRedondeados < 60) {
+    return `${minutosRedondeados} min`;
+  }
+
+  const horas = Math.floor(minutosRedondeados / 60);
+  const minutosRestantes = minutosRedondeados % 60;
+  return minutosRestantes > 0 ? `${horas}h ${minutosRestantes}m` : `${horas}h`;
+};
