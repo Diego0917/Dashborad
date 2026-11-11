@@ -36,3 +36,13 @@ CREATE TABLE registros_ingreso (
 -- Sentencias opcionales si las tablas ya fueron creadas previamente:
 -- CREATE INDEX idx_personas_nombre ON personas (nombre_completo);
 -- CREATE INDEX idx_registros_fecha_hora ON registros_ingreso (fecha_ingreso, hora_ingreso);
+
+--Creacion tabla usuarios (acceso al Dashboard con autenticacion JWT)
+CREATE TABLE IF NOT EXISTS usuarios (
+    id_usuario INT AUTO_INCREMENT PRIMARY KEY,
+    nombre_usuario VARCHAR(50) NOT NULL UNIQUE,
+    nombre_completo VARCHAR(100) NOT NULL,
+    contrasena_hash VARCHAR(255) NOT NULL,
+    activo TINYINT(1) NOT NULL DEFAULT 1,
+    fecha_creacion TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

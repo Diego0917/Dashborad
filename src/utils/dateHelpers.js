@@ -156,7 +156,7 @@ export const obtenerRangoFechas = (
 
 export const formatearFechaParaAPI = (fecha) => {
   const fechaValida = parsearFechaLocal(fecha);
-  return fechaValida ? fechaValida.toISOString() : '';
+  return fechaValida ? format(fechaValida, 'yyyy-MM-dd') : '';
 };
 
 /**

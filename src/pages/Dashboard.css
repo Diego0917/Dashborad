@@ -247,6 +247,57 @@
   font-size: 0.85rem;
 }
 
+/* Paginación */
+.pagination-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background-color: #fff;
+  padding: 0.85rem 1.25rem;
+  margin-top: 0.75rem;
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.pagination-info {
+  font-size: 0.875rem;
+  color: #4a5568;
+}
+
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.pagination-button {
+  padding: 0.45rem 1rem;
+  background-color: #edf2f7;
+  color: #2d3748;
+  border: 1px solid #cbd5e0;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.pagination-button:hover:not(:disabled) {
+  background-color: #e2e8f0;
+}
+
+.pagination-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.pagination-page-indicator {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #2d3748;
+}
+
 /* Estadísticas */
 .stats-header {
   display: flex;

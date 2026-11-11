@@ -29,3 +29,14 @@ Este documento contiene la estructura detallada de las tablas que componen la ba
 | `fecha_ingreso` | DATE | - | NO | Fecha en la que ingresa el usuario |
 | `hora_ingreso` | TIME | - | NO | Hora en la que ingresa el usuario |
 | `hora_salida` | TIME | - | SÍ | Hora en la que sale el usuario |
+
+## 4. Tabla: Usuarios (Acceso al Dashboard)
+
+| Campo | Tipo de Dato | Llave | Null | Descripción |
+| :--- | :--- | :---: | :---: | :--- |
+| `id_usuario` | INT | PK | NO | Identificador único del usuario del sistema |
+| `nombre_usuario` | VARCHAR(50) | UNIQUE | NO | Nombre de usuario para iniciar sesión |
+| `nombre_completo` | VARCHAR(100) | - | NO | Nombre completo del operador o administrador |
+| `contrasena_hash` | VARCHAR(255) | - | NO | Contraseña encriptada mediante bcrypt |
+| `activo` | TINYINT(1) | - | NO | Estado de la cuenta (`1` = activo, `0` = inactivo) |
+| `fecha_creacion` | TIMESTAMP | - | NO | Fecha y hora de creación del usuario |

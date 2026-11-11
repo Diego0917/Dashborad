@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { isWithinInterval } from 'date-fns';
 import {
   BarChart,
   Bar,
@@ -16,17 +15,17 @@ import {
 import { useAuth } from '../context/AuthContext';
 import {
   obtenerRangoFechas,
-  parsearFechaLocal,
   formatearFechaLegible,
   obtenerClaveDia,
   esMismoDia,
-  calcularDuracionMinutos,
   formatearDuracionLegible,
 } from '../utils/dateHelpers';
-import { obtenerVisitas } from '../api/unifiApi';
+import { obtenerVisitas, obtenerEstadisticasVisitas } from '../api/unifiApi';
 import './Dashboard.css';
 
 const COLORES = ['#0066cc', '#38a169', '#dd6b20', '#805ad5', '#e53e3e'];
+
+const LIMITE_POR_PAGINA = 50;
 
 const FILTROS_INICIALES = {
   textoBusqueda: '',
@@ -36,7 +35,38 @@ const FILTROS_INICIALES = {
   fechaFinPersonalizada: '',
 };
 
+const ETIQUETAS_PERIODO = {
+  hoy: 'Hoy',
+  ayer: 'Ayer',
+  '7dias': 'Últimos 7 días',
+  '30dias': 'Últimos 30 días',
+  personalizado: 'Periodo personalizado',
+};
+
 const INTERVALO_ACTUALIZACION_MS = 300000; // 5 minutos
+
+const construirParametrosFiltroServidor = (filtros) => {
+  const rangoFechas = obtenerRangoFechas(
+    filtros.periodo,
+    filtros.fechaInicioPersonalizada,
+    filtros.fechaFinPersonalizada
+  );
+
+  const parametros = {};
+  const fechaInicio = obtenerClaveDia(rangoFechas.inicio);
+  const fechaFin = obtenerClaveDia(rangoFechas.fin);
+
+  if (fechaInicio) parametros.fechaInicio = fechaInicio;
+  if (fechaFin) parametros.fechaFin = fechaFin;
+  if (filtros.filtroRol && filtros.filtroRol !== 'todos') {
+    parametros.rol = filtros.filtroRol;
+  }
+  if (filtros.textoBusqueda && filtros.textoBusqueda.trim() !== '') {
+    parametros.busqueda = filtros.textoBusqueda.trim();
+  }
+
+  return parametros;
+};
 
 const Dashboard = () => {
   const { usuario, cerrarSesion } = useAuth();
@@ -52,22 +82,59 @@ const Dashboard = () => {
     FILTROS_INICIALES.fechaFinPersonalizada
   );
 
-  // Filtros efectivamente aplicados al pulsar "Aplicar Filtros"
+  // Filtros efectivamente aplicados al servidor y paginación
   const [filtrosAplicados, setFiltrosAplicados] = useState(FILTROS_INICIALES);
+  const [paginaActual, setPaginaActual] = useState(1);
 
   // Datos y estado de red / UI
-  const [todasLasVisitas, setTodasLasVisitas] = useState([]);
+  const [visitasPagina, setVisitasPagina] = useState([]);
+  const [totalRegistros, setTotalRegistros] = useState(0);
+  const [estadisticasServidor, setEstadisticasServidor] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [errorCarga, setErrorCarga] = useState('');
   const [pestanaActiva, setPestanaActiva] = useState('listado');
   const [ultimaActualizacion, setUltimaActualizacion] = useState(null);
 
+  const consultarServidor = useCallback(async (filtrosActivos, pagina) => {
+    const parametrosBase = construirParametrosFiltroServidor(filtrosActivos);
+    const desplazamiento = (pagina - 1) * LIMITE_POR_PAGINA;
+
+    const [respuestaVisitas, respuestaEstadisticas] = await Promise.all([
+      obtenerVisitas({
+        ...parametrosBase,
+        limite: LIMITE_POR_PAGINA,
+        desplazamiento,
+        incluirTotal: 'true',
+      }),
+      obtenerEstadisticasVisitas(parametrosBase),
+    ]);
+
+    const listaRegistros = Array.isArray(respuestaVisitas)
+      ? respuestaVisitas
+      : Array.isArray(respuestaVisitas?.registros)
+        ? respuestaVisitas.registros
+        : [];
+
+    const total =
+      typeof respuestaVisitas?.total === 'number'
+        ? respuestaVisitas.total
+        : listaRegistros.length;
+
+    return {
+      registros: listaRegistros,
+      total,
+      estadisticas: respuestaEstadisticas,
+    };
+  }, []);
+
   const cargarVisitas = useCallback(async () => {
     setCargando(true);
     setErrorCarga('');
     try {
-      const datos = await obtenerVisitas();
-      setTodasLasVisitas(Array.isArray(datos) ? datos : []);
+      const resultado = await consultarServidor(filtrosAplicados, paginaActual);
+      setVisitasPagina(resultado.registros);
+      setTotalRegistros(resultado.total);
+      setEstadisticasServidor(resultado.estadisticas);
       setUltimaActualizacion(new Date());
     } catch (error) {
       console.error('Error al cargar visitas:', error);
@@ -75,16 +142,19 @@ const Dashboard = () => {
     } finally {
       setCargando(false);
     }
-  }, []);
+  }, [consultarServidor, filtrosAplicados, paginaActual]);
 
   useEffect(() => {
     let cancelado = false;
 
-    const inicializar = async () => {
+    const ejecutarConsulta = async () => {
+      setCargando(true);
       try {
-        const datos = await obtenerVisitas();
+        const resultado = await consultarServidor(filtrosAplicados, paginaActual);
         if (!cancelado) {
-          setTodasLasVisitas(Array.isArray(datos) ? datos : []);
+          setVisitasPagina(resultado.registros);
+          setTotalRegistros(resultado.total);
+          setEstadisticasServidor(resultado.estadisticas);
           setUltimaActualizacion(new Date());
           setErrorCarga('');
         }
@@ -100,19 +170,20 @@ const Dashboard = () => {
       }
     };
 
-    inicializar();
+    ejecutarConsulta();
     const intervalo = setInterval(() => {
-      inicializar();
+      ejecutarConsulta();
     }, INTERVALO_ACTUALIZACION_MS);
 
     return () => {
       cancelado = true;
       clearInterval(intervalo);
     };
-  }, []);
+  }, [consultarServidor, filtrosAplicados, paginaActual]);
 
   const aplicarFiltros = (evento) => {
     if (evento) evento.preventDefault();
+    setPaginaActual(1);
     setFiltrosAplicados({
       textoBusqueda: textoBusqueda.trim(),
       filtroRol,
@@ -120,9 +191,6 @@ const Dashboard = () => {
       fechaInicioPersonalizada,
       fechaFinPersonalizada,
     });
-    if (!ultimaActualizacion) {
-      setUltimaActualizacion(new Date());
-    }
   };
 
   const limpiarFiltros = () => {
@@ -131,48 +199,27 @@ const Dashboard = () => {
     setPeriodo(FILTROS_INICIALES.periodo);
     setFechaInicioPersonalizada(FILTROS_INICIALES.fechaInicioPersonalizada);
     setFechaFinPersonalizada(FILTROS_INICIALES.fechaFinPersonalizada);
+    setPaginaActual(1);
     setFiltrosAplicados(FILTROS_INICIALES);
   };
 
-  // Visitas filtradas para la pestaña "Listado"
-  const visitasFiltradas = useMemo(() => {
-    if (todasLasVisitas.length === 0 || !ultimaActualizacion) return [];
+  const totalPaginas = Math.max(1, Math.ceil(totalRegistros / LIMITE_POR_PAGINA));
+  const indicePrimerRegistro =
+    totalRegistros === 0 ? 0 : (paginaActual - 1) * LIMITE_POR_PAGINA + 1;
+  const indiceUltimoRegistro = Math.min(paginaActual * LIMITE_POR_PAGINA, totalRegistros);
 
-    const rangoFechas = obtenerRangoFechas(
-      filtrosAplicados.periodo,
-      filtrosAplicados.fechaInicioPersonalizada,
-      filtrosAplicados.fechaFinPersonalizada,
-      ultimaActualizacion
-    );
-    const busqueda = filtrosAplicados.textoBusqueda.toLowerCase();
+  const irAPaginaAnterior = () => {
+    setPaginaActual((paginaPrevia) => Math.max(1, paginaPrevia - 1));
+  };
 
-    return todasLasVisitas.filter((visita) => {
-      if (filtrosAplicados.filtroRol !== 'todos' && visita.rol !== filtrosAplicados.filtroRol) {
-        return false;
-      }
+  const irAPaginaSiguiente = () => {
+    setPaginaActual((paginaPrevia) => Math.min(totalPaginas, paginaPrevia + 1));
+  };
 
-      if (busqueda) {
-        const coincideNombre = visita.nombre_completo?.toLowerCase().includes(busqueda);
-        const coincideCedula = String(visita.cedula ?? '').toLowerCase().includes(busqueda);
-        if (!coincideNombre && !coincideCedula) {
-          return false;
-        }
-      }
-
-      const fechaVisita = parsearFechaLocal(visita.fecha_ingreso);
-      if (!fechaVisita) return false;
-
-      return isWithinInterval(fechaVisita, {
-        start: rangoFechas.inicio,
-        end: rangoFechas.fin,
-      });
-    });
-  }, [todasLasVisitas, filtrosAplicados, ultimaActualizacion]);
-
-  // Métricas y gráficas para la pestaña "Estadísticas" (calculadas una sola vez cuando cambian los datos)
+  // Métricas y gráficas para la pestaña "Estadísticas" basadas en la respuesta agregada del servidor
   const {
-    totalEntradasHoy,
-    visitantesUnicosHoy,
+    totalEntradasPeriodo,
+    visitantesUnicosPeriodo,
     personasEnEdificioHoy,
     detalleEnEdificio,
     tiempoPromedioVisita,
@@ -181,12 +228,16 @@ const Dashboard = () => {
     datosPorHora,
     datosPorDia,
   } = useMemo(() => {
-    if (todasLasVisitas.length === 0 || !ultimaActualizacion) {
+    const porRol = estadisticasServidor?.porRol || [];
+    const porHora = estadisticasServidor?.porHora || [];
+    const porDia = estadisticasServidor?.porDia || [];
+
+    if (porRol.length === 0 && porHora.length === 0 && porDia.length === 0) {
       return {
-        totalEntradasHoy: 0,
-        visitantesUnicosHoy: 0,
+        totalEntradasPeriodo: 0,
+        visitantesUnicosPeriodo: 0,
         personasEnEdificioHoy: 0,
-        detalleEnEdificio: 'Sin registros hoy',
+        detalleEnEdificio: 'Sin registros en el filtro actual',
         tiempoPromedioVisita: '--',
         detalleTiempoPromedio: 'Sin salidas registradas',
         datosPorRol: [],
@@ -195,80 +246,49 @@ const Dashboard = () => {
       };
     }
 
-    let conteoEntradasHoy = 0;
+    let conteoEntradas = 0;
+    let conteoVisitantesUnicos = 0;
     let conteoEnEdificioHoy = 0;
     let salidasPendientesAnteriores = 0;
-    const cedulasHoy = new Set();
-    const conteoEnEdificioPorRol = {};
-    const conteoRol = {};
-    const conteoPorHora = {};
-    const conteoPorDia = {};
-
     let sumaMinutosPermanencia = 0;
     let conteoVisitasCerradas = 0;
-    const duracionPorRol = {};
 
-    for (const visita of todasLasVisitas) {
-      const nombreRol = visita.rol || 'Sin rol';
-      const esIngresoDeHoy = esMismoDia(visita.fecha_ingreso, ultimaActualizacion);
-      const tieneSalida = Boolean(visita.hora_salida && String(visita.hora_salida).trim() !== '');
+    const resumenRolesDentro = [];
+    const promediosPorRolTexto = [];
+    const listaRoles = [];
 
-      //  día actual y aforo activo
-      if (esIngresoDeHoy) {
-        conteoEntradasHoy += 1;
-        if (visita.cedula) {
-          cedulasHoy.add(visita.cedula);
-        }
-        if (!tieneSalida) {
-          conteoEnEdificioHoy += 1;
-          conteoEnEdificioPorRol[nombreRol] = (conteoEnEdificioPorRol[nombreRol] || 0) + 1;
-        }
-      } else if (!tieneSalida) {
-        salidasPendientesAnteriores += 1;
+    for (const itemRol of porRol) {
+      const nombreRol = itemRol.rol || 'Sin rol';
+      conteoEntradas += itemRol.totalEntradas;
+      conteoVisitantesUnicos += itemRol.visitantesUnicos;
+      conteoEnEdificioHoy += itemRol.enEdificioHoy;
+      salidasPendientesAnteriores += itemRol.sinSalidaAnteriores;
+      sumaMinutosPermanencia += itemRol.sumaMinutos;
+      conteoVisitasCerradas += itemRol.visitasCerradas;
+
+      if (itemRol.enEdificioHoy > 0) {
+        resumenRolesDentro.push(`${itemRol.enEdificioHoy} ${nombreRol}`);
       }
 
-      // Tiempo de permanencia (hora_salida - hora_ingreso)
-      if (tieneSalida) {
-        const duracionMinutos = calcularDuracionMinutos(visita.hora_ingreso, visita.hora_salida);
-        if (duracionMinutos !== null) {
-          sumaMinutosPermanencia += duracionMinutos;
-          conteoVisitasCerradas += 1;
-
-          if (!duracionPorRol[nombreRol]) {
-            duracionPorRol[nombreRol] = { suma: 0, cantidad: 0 };
-          }
-          duracionPorRol[nombreRol].suma += duracionMinutos;
-          duracionPorRol[nombreRol].cantidad += 1;
-        }
+      if (
+        (nombreRol === 'Visitante' || nombreRol === 'Proveedor') &&
+        itemRol.visitasCerradas > 0
+      ) {
+        promediosPorRolTexto.push(
+          `${nombreRol}: ${formatearDuracionLegible(itemRol.sumaMinutos / itemRol.visitasCerradas)}`
+        );
       }
 
-      // Conteo por rol ('Empleado', 'Visitante', 'Proveedor', etc.)
-      conteoRol[nombreRol] = (conteoRol[nombreRol] || 0) + 1;
-
-      // Conteo por hora
-      if (typeof visita.hora_ingreso === 'string' && visita.hora_ingreso.length >= 2) {
-        const claveHora = `${visita.hora_ingreso.substring(0, 2)}:00`;
-        conteoPorHora[claveHora] = (conteoPorHora[claveHora] || 0) + 1;
-      }
-
-      // Conteo por día ordenable cronológicamente
-      const claveIsoDia = obtenerClaveDia(visita.fecha_ingreso);
-      if (claveIsoDia) {
-        if (!conteoPorDia[claveIsoDia]) {
-          conteoPorDia[claveIsoDia] = {
-            etiqueta: formatearFechaLegible(visita.fecha_ingreso),
-            cantidad: 0,
-          };
-        }
-        conteoPorDia[claveIsoDia].cantidad += 1;
+      if (itemRol.totalEntradas > 0) {
+        listaRoles.push({
+          nombre: nombreRol,
+          valor: itemRol.totalEntradas,
+        });
       }
     }
 
-    const resumenRolesDentro = Object.entries(conteoEnEdificioPorRol)
-      .map(([rolActual, cantidad]) => `${cantidad} ${rolActual}`)
-      .join(' · ');
-
-    let textoDetalleEdificio = resumenRolesDentro || 'Nadie dentro actualmente';
+    let textoDetalleEdificio =
+      resumenRolesDentro.join(' · ') || 'Nadie dentro actualmente';
     if (salidasPendientesAnteriores > 0) {
       textoDetalleEdificio += ` (${salidasPendientesAnteriores} sin salida de días previos)`;
     }
@@ -276,49 +296,41 @@ const Dashboard = () => {
     const promedioGeneralMinutos =
       conteoVisitasCerradas > 0 ? sumaMinutosPermanencia / conteoVisitasCerradas : null;
 
-    const promediosPorRolTexto = ['Visitante', 'Proveedor']
-      .filter((rolObjetivo) => duracionPorRol[rolObjetivo]?.cantidad > 0)
-      .map((rolObjetivo) => {
-        const datosRol = duracionPorRol[rolObjetivo];
-        return `${rolObjetivo}: ${formatearDuracionLegible(datosRol.suma / datosRol.cantidad)}`;
-      })
-      .join(' · ');
-
     const textoDetallePromedio =
       conteoVisitasCerradas === 0
         ? 'Sin salidas registradas aún'
-        : promediosPorRolTexto || `Basado en ${conteoVisitasCerradas} salidas registradas`;
+        : promediosPorRolTexto.join(' · ') ||
+          `Basado en ${conteoVisitasCerradas} salidas registradas`;
 
-    const listaRoles = Object.entries(conteoRol)
-      .map(([nombre, valor]) => ({ nombre, valor }))
-      .filter((item) => item.valor > 0);
-
-    const listaHoras = Object.keys(conteoPorHora)
-      .sort()
-      .map((hora) => ({
-        hora,
-        cantidad: conteoPorHora[hora],
-      }));
-
-    const listaDias = Object.keys(conteoPorDia)
-      .sort()
-      .map((claveIso) => ({
-        dia: conteoPorDia[claveIso].etiqueta,
-        cantidad: conteoPorDia[claveIso].cantidad,
-      }));
+    const listaDias = porDia.map((itemDia) => ({
+      dia: formatearFechaLegible(itemDia.fecha),
+      cantidad: itemDia.cantidad,
+    }));
 
     return {
-      totalEntradasHoy: conteoEntradasHoy,
-      visitantesUnicosHoy: cedulasHoy.size,
+      totalEntradasPeriodo: conteoEntradas,
+      visitantesUnicosPeriodo: conteoVisitantesUnicos,
       personasEnEdificioHoy: conteoEnEdificioHoy,
       detalleEnEdificio: textoDetalleEdificio,
       tiempoPromedioVisita: formatearDuracionLegible(promedioGeneralMinutos),
       detalleTiempoPromedio: textoDetallePromedio,
       datosPorRol: listaRoles,
-      datosPorHora: listaHoras,
+      datosPorHora: porHora,
       datosPorDia: listaDias,
     };
-  }, [todasLasVisitas, ultimaActualizacion]);
+  }, [estadisticasServidor]);
+
+  const esFiltroHoy = filtrosAplicados.periodo === 'hoy';
+  const descripcionFiltroActivo = useMemo(() => {
+    const partes = [ETIQUETAS_PERIODO[filtrosAplicados.periodo] || 'Hoy'];
+    if (filtrosAplicados.filtroRol !== 'todos') {
+      partes.push(`Rol: ${filtrosAplicados.filtroRol}`);
+    }
+    if (filtrosAplicados.textoBusqueda) {
+      partes.push(`Búsqueda: "${filtrosAplicados.textoBusqueda}"`);
+    }
+    return partes.join(' · ');
+  }, [filtrosAplicados]);
 
   return (
     <div className="dashboard-container">
@@ -359,88 +371,93 @@ const Dashboard = () => {
         </div>
       </nav>
 
-      {pestanaActiva === 'listado' && (
-        <>
-          <form className="filters-bar" onSubmit={aplicarFiltros}>
+      <form className="filters-bar" onSubmit={aplicarFiltros}>
+        <div className="filter-group">
+          <label htmlFor="busqueda">Buscar</label>
+          <input
+            type="text"
+            id="busqueda"
+            placeholder="Nombre o cédula..."
+            value={textoBusqueda}
+            onChange={(evento) => setTextoBusqueda(evento.target.value)}
+          />
+        </div>
+
+        <div className="filter-group">
+          <label htmlFor="rol">Rol</label>
+          <select
+            id="rol"
+            value={filtroRol}
+            onChange={(evento) => setFiltroRol(evento.target.value)}
+          >
+            <option value="todos">Todos</option>
+            <option value="Empleado">Empleado</option>
+            <option value="Visitante">Visitante</option>
+            <option value="Proveedor">Proveedor</option>
+          </select>
+        </div>
+
+        <div className="filter-group">
+          <label htmlFor="periodo">Periodo de visita</label>
+          <select
+            id="periodo"
+            value={periodo}
+            onChange={(evento) => setPeriodo(evento.target.value)}
+          >
+            <option value="hoy">Hoy</option>
+            <option value="ayer">Ayer</option>
+            <option value="7dias">Últimos 7 días</option>
+            <option value="30dias">Últimos 30 días</option>
+            <option value="personalizado">Personalizado</option>
+          </select>
+        </div>
+
+        {periodo === 'personalizado' && (
+          <>
             <div className="filter-group">
-              <label htmlFor="busqueda">Buscar</label>
+              <label htmlFor="fechaInicio">Fecha inicio</label>
               <input
-                type="text"
-                id="busqueda"
-                placeholder="Nombre o cédula..."
-                value={textoBusqueda}
-                onChange={(evento) => setTextoBusqueda(evento.target.value)}
+                type="date"
+                id="fechaInicio"
+                value={fechaInicioPersonalizada}
+                onChange={(evento) => setFechaInicioPersonalizada(evento.target.value)}
               />
             </div>
-
             <div className="filter-group">
-              <label htmlFor="rol">Rol</label>
-              <select
-                id="rol"
-                value={filtroRol}
-                onChange={(evento) => setFiltroRol(evento.target.value)}
-              >
-                <option value="todos">Todos</option>
-                <option value="Empleado">Empleado</option>
-                <option value="Visitante">Visitante</option>
-                <option value="Proveedor">Proveedor</option>
-              </select>
+              <label htmlFor="fechaFin">Fecha fin</label>
+              <input
+                type="date"
+                id="fechaFin"
+                value={fechaFinPersonalizada}
+                onChange={(evento) => setFechaFinPersonalizada(evento.target.value)}
+              />
             </div>
+          </>
+        )}
 
-            <div className="filter-group">
-              <label htmlFor="periodo">Periodo de visita</label>
-              <select
-                id="periodo"
-                value={periodo}
-                onChange={(evento) => setPeriodo(evento.target.value)}
-              >
-                <option value="hoy">Hoy</option>
-                <option value="ayer">Ayer</option>
-                <option value="7dias">Últimos 7 días</option>
-                <option value="30dias">Últimos 30 días</option>
-                <option value="personalizado">Personalizado</option>
-              </select>
-            </div>
+        <div className="filter-buttons">
+          <button type="submit" className="apply-filters-button" disabled={cargando}>
+            Aplicar Filtros
+          </button>
+          <button
+            type="button"
+            onClick={limpiarFiltros}
+            className="clear-filters-button"
+            disabled={cargando}
+          >
+            Limpiar
+          </button>
+        </div>
+      </form>
 
-            {periodo === 'personalizado' && (
-              <>
-                <div className="filter-group">
-                  <label htmlFor="fechaInicio">Fecha inicio</label>
-                  <input
-                    type="date"
-                    id="fechaInicio"
-                    value={fechaInicioPersonalizada}
-                    onChange={(evento) => setFechaInicioPersonalizada(evento.target.value)}
-                  />
-                </div>
-                <div className="filter-group">
-                  <label htmlFor="fechaFin">Fecha fin</label>
-                  <input
-                    type="date"
-                    id="fechaFin"
-                    value={fechaFinPersonalizada}
-                    onChange={(evento) => setFechaFinPersonalizada(evento.target.value)}
-                  />
-                </div>
-              </>
-            )}
+      {pestanaActiva === 'listado' && (
+        <main className="dashboard-content">
+          {errorCarga && <div className="error-banner">{errorCarga}</div>}
 
-            <div className="filter-buttons">
-              <button type="submit" className="apply-filters-button">
-                Aplicar Filtros
-              </button>
-              <button type="button" onClick={limpiarFiltros} className="clear-filters-button">
-                Limpiar
-              </button>
-            </div>
-          </form>
-
-          <main className="dashboard-content">
-            {errorCarga && <div className="error-banner">{errorCarga}</div>}
-
-            {cargando && todasLasVisitas.length === 0 ? (
-              <p>Cargando...</p>
-            ) : (
+          {cargando && visitasPagina.length === 0 ? (
+            <p>Cargando...</p>
+          ) : (
+            <>
               <div className="table-container">
                 <table className="visits-table">
                   <thead>
@@ -458,14 +475,14 @@ const Dashboard = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {visitasFiltradas.length === 0 ? (
+                    {visitasPagina.length === 0 ? (
                       <tr>
                         <td colSpan="10" className="empty-cell">
                           No hay visitas para mostrar en el periodo seleccionado
                         </td>
                       </tr>
                     ) : (
-                      visitasFiltradas.map((visita) => {
+                      visitasPagina.map((visita) => {
                         const tieneSalida = Boolean(
                           visita.hora_salida && String(visita.hora_salida).trim() !== ''
                         );
@@ -506,9 +523,39 @@ const Dashboard = () => {
                   </tbody>
                 </table>
               </div>
-            )}
-          </main>
-        </>
+
+              <div className="pagination-bar" aria-label="Paginación de ingresos">
+                <span className="pagination-info">
+                  {totalRegistros === 0
+                    ? 'Mostrando 0 ingresos'
+                    : `Mostrando ${indicePrimerRegistro}–${indiceUltimoRegistro} de ${totalRegistros} ingresos (${LIMITE_POR_PAGINA} por página)`}
+                </span>
+
+                <div className="pagination-controls">
+                  <button
+                    type="button"
+                    onClick={irAPaginaAnterior}
+                    disabled={paginaActual <= 1 || cargando}
+                    className="pagination-button"
+                  >
+                    Anterior
+                  </button>
+                  <span className="pagination-page-indicator">
+                    Página {paginaActual} de {totalPaginas}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={irAPaginaSiguiente}
+                    disabled={paginaActual >= totalPaginas || cargando}
+                    className="pagination-button"
+                  >
+                    Siguiente
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+        </main>
       )}
 
       {pestanaActiva === 'estadisticas' && (
@@ -517,7 +564,7 @@ const Dashboard = () => {
 
           <div className="stats-header">
             <div>
-              <h2 className="stats-title">Estadísticas de visitas</h2>
+              <h2 className="stats-title">Estadísticas de visitas ({descripcionFiltroActivo})</h2>
               <p className="stats-subtitle">
                 {ultimaActualizacion
                   ? `Última actualización: ${ultimaActualizacion.toLocaleTimeString('es-CO')} — Se actualiza automáticamente cada 5 minutos`
@@ -528,12 +575,14 @@ const Dashboard = () => {
 
           <div className="kpi-grid">
             <div className="kpi-card">
-              <p className="kpi-label">Entradas hoy</p>
-              <p className="kpi-value">{totalEntradasHoy}</p>
+              <p className="kpi-label">{esFiltroHoy ? 'Entradas hoy' : 'Entradas en el periodo'}</p>
+              <p className="kpi-value">{totalEntradasPeriodo}</p>
             </div>
             <div className="kpi-card kpi-card--green">
-              <p className="kpi-label">Visitantes únicos hoy</p>
-              <p className="kpi-value">{visitantesUnicosHoy}</p>
+              <p className="kpi-label">
+                {esFiltroHoy ? 'Visitantes únicos hoy' : 'Visitantes únicos'}
+              </p>
+              <p className="kpi-value">{visitantesUnicosPeriodo}</p>
             </div>
             <div className="kpi-card kpi-card--orange">
               <p className="kpi-label">Actualmente en el edificio</p>

@@ -1,4 +1,4 @@
-﻿import { useState } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import logoLira from '../assets/logo-lira.png';
@@ -8,23 +8,36 @@ const Login = () => {
   const [usuario, setUsuario] = useState('');
   const [contrasena, setContrasena] = useState('');
   const [error, setError] = useState('');
+  const [enviando, setEnviando] = useState(false);
   const { iniciarSesion } = useAuth();
   const navegar = useNavigate();
 
-  const manejarEnvio = (e) => {
+  const manejarEnvio = async (e) => {
     e.preventDefault();
     setError('');
-    
-    if (!usuario || !contrasena) {
+
+    if (!usuario.trim() || !contrasena) {
       setError('Usuario y contraseña son obligatorios');
       return;
     }
-    
-    const exito = iniciarSesion(usuario, contrasena);
-    if (exito) {
-      navegar('/dashboard');
-    } else {
-      setError('Credenciales inválidas');
+
+    setEnviando(true);
+    try {
+      const exito = await iniciarSesion(usuario.trim(), contrasena);
+      if (exito) {
+        navegar('/dashboard');
+      } else {
+        setError('Credenciales inválidas');
+      }
+    } catch (errorLogin) {
+      const mensajeServidor = errorLogin?.response?.data?.error;
+      if (mensajeServidor) {
+        setError(mensajeServidor);
+      } else {
+        setError('No se pudo conectar con el servidor de autenticación');
+      }
+    } finally {
+      setEnviando(false);
     }
   };
 
@@ -56,7 +69,9 @@ const Login = () => {
             />
           </div>
           {error && <div className="error-message">{error}</div>}
-          <button type="submit" className="login-button">Iniciar Sesión</button>
+          <button type="submit" className="login-button" disabled={enviando}>
+            {enviando ? 'Iniciando sesión...' : 'Iniciar Sesión'}
+          </button>
         </form>
       </div>
     </div>
