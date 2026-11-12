@@ -7,21 +7,27 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
+# Dependencias y compilados
+node_modules/
+server/node_modules/
+dist/
+dist-ssr/
 *.local
 
-# Variables de entorno
+# Variables de entorno y secretos (NUNCA subir a Git)
 .env
 .env.*
+server/.env
+server/.env.*
 !.env.example
+!server/.env.example
 
-# Editor directories and files
+# Archivos temporales y de sistema
 .vscode/*
 !.vscode/extensions.json
-.idea
+.idea/
 .DS_Store
+Thumbs.db
 *.suo
 *.ntvs*
 *.njsproj

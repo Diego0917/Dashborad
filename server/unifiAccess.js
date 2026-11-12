@@ -5,7 +5,7 @@ const nodemailer = require('nodemailer');
 const obtenerConfiguracionUnifi = () => {
   const host = (process.env.UNIFI_HOST || '192.168.40.178').trim();
   const port = (process.env.UNIFI_PORT || '12445').trim();
-  const token = (process.env.UNIFI_TOKEN || 'gyxOY3YsJOV8bNiwXaxUhQ').trim();
+  const token = (process.env.UNIFI_TOKEN || '').trim();
   const verifySsl =
     String(process.env.UNIFI_VERIFY_SSL || 'false').toLowerCase() === 'true';
   const puertaDefecto = (
