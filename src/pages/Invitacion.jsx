@@ -20,6 +20,7 @@ const FORMULARIO_INICIAL = {
   correo: '',
   motivo: '',
   puertaId: PUERTA_UNIFI_POR_DEFECTO,
+  modoActivacion: 'ambos',
   ventanaSegundos: '3600',
   maxUsos: '2',
 };
@@ -111,6 +112,7 @@ const Invitacion = () => {
 
     setEnviando(true);
     try {
+      const esSoloTiempo = formulario.modoActivacion === 'tiempo';
       const resultado = await registrarIngresoConQr({
         cedula: formulario.cedula.trim(),
         nombre_completo: formulario.nombre_completo.trim(),
@@ -121,8 +123,9 @@ const Invitacion = () => {
         correo: formulario.correo.trim() || '',
         motivo: formulario.motivo.trim() || 'Visita autorizada',
         puertas: [formulario.puertaId || PUERTA_UNIFI_POR_DEFECTO],
+        modoActivacion: formulario.modoActivacion,
         ventanaSegundos: Number(formulario.ventanaSegundos) || 3600,
-        maxUsos: Number(formulario.maxUsos) || 2,
+        maxUsos: esSoloTiempo ? 0 : Math.max(1, Number(formulario.maxUsos) || 2),
       });
 
       setQrGenerado(resultado);
@@ -321,18 +324,56 @@ const Invitacion = () => {
               </div>
 
               <div className="filter-group">
-                <label htmlFor="inv-ventana">Tiempo de vida del QR</label>
+                <label htmlFor="inv-modo">Modo de activación del QR *</label>
                 <select
-                  id="inv-ventana"
-                  value={formulario.ventanaSegundos}
-                  onChange={(e) => manejarCambio('ventanaSegundos', e.target.value)}
+                  id="inv-modo"
+                  value={formulario.modoActivacion}
+                  onChange={(e) => manejarCambio('modoActivacion', e.target.value)}
                 >
-                  <option value="1800">30 minutos</option>
-                  <option value="3600">1 hora (Por defecto)</option>
-                  <option value="7200">2 horas</option>
-                  <option value="14400">4 horas</option>
+                  <option value="ambos">Por Tiempo de vida y Cantidad de usos</option>
+                  <option value="tiempo">Solo por Tiempo de vida (Sin límite de usos)</option>
+                  <option value="usos">Solo por Cantidad de usos</option>
                 </select>
               </div>
+
+              {(formulario.modoActivacion === 'tiempo' ||
+                formulario.modoActivacion === 'ambos') && (
+                <div className="filter-group">
+                  <label htmlFor="inv-ventana">Tiempo de vida del QR</label>
+                  <select
+                    id="inv-ventana"
+                    value={formulario.ventanaSegundos}
+                    onChange={(e) => manejarCambio('ventanaSegundos', e.target.value)}
+                  >
+                    <option value="1800">30 minutos</option>
+                    <option value="3600">1 hora (Por defecto)</option>
+                    <option value="7200">2 horas</option>
+                    <option value="14400">4 horas</option>
+                    <option value="28800">8 horas (Jornada completa)</option>
+                    <option value="86400">24 horas (1 día)</option>
+                  </select>
+                </div>
+              )}
+
+              {(formulario.modoActivacion === 'usos' ||
+                formulario.modoActivacion === 'ambos') && (
+                <div className="filter-group">
+                  <label htmlFor="inv-usos">Cantidad de usos permitidos</label>
+                  <input
+                    id="inv-usos"
+                    type="number"
+                    min="1"
+                    max="50"
+                    value={formulario.maxUsos}
+                    onChange={(e) => manejarCambio('maxUsos', e.target.value)}
+                    placeholder="Ej. 2 (1 entrada + 1 salida)"
+                    required
+                  />
+                  <small style={{ color: '#718096', fontSize: '0.78rem', marginTop: '0.2rem' }}>
+                    Ej: 1 uso (solo entrada), 2 usos (1 entrada + 1 salida), 4 usos, etc.
+                  </small>
+                </div>
+              )}
 
               <div className="invitacion-actions invitacion-full">
                 <button
@@ -400,13 +441,33 @@ const Invitacion = () => {
                     <p className="modal-detail-value">{qrGenerado.motivo}</p>
                   </div>
                   <div className="modal-detail-item">
-                    <span className="modal-detail-label">Accesos y Tiempo de vida</span>
+                    <span className="modal-detail-label">Vigencia configurada del QR</span>
                     <p className="modal-detail-value">
-                      {qrGenerado.usos_actuales} de {qrGenerado.max_usos} accesos (1 entrada +
-                      1 salida) · Vence a las{' '}
-                      {new Date(Number(qrGenerado.fin_timestamp) * 1000).toLocaleTimeString(
-                        'es-CO',
-                        { hour: '2-digit', minute: '2-digit' }
+                      {Number(qrGenerado.max_usos) === 0 ? (
+                        <>
+                          Solo por Tiempo de vida (Sin límite de usos) · Vence a las{' '}
+                          {new Date(Number(qrGenerado.fin_timestamp) * 1000).toLocaleTimeString(
+                            'es-CO',
+                            { hour: '2-digit', minute: '2-digit' }
+                          )}
+                        </>
+                      ) : qrGenerado.modo_activacion === 'usos' ? (
+                        <>
+                          Solo por Cantidad de usos ({qrGenerado.usos_actuales} de{' '}
+                          {qrGenerado.max_usos}{' '}
+                          {Number(qrGenerado.max_usos) === 1 ? 'uso configurado' : 'usos configurados'}
+                          )
+                        </>
+                      ) : (
+                        <>
+                          {qrGenerado.usos_actuales} de {qrGenerado.max_usos}{' '}
+                          {Number(qrGenerado.max_usos) === 1 ? 'uso configurado' : 'usos configurados'}{' '}
+                          · Vence a las{' '}
+                          {new Date(Number(qrGenerado.fin_timestamp) * 1000).toLocaleTimeString(
+                            'es-CO',
+                            { hour: '2-digit', minute: '2-digit' }
+                          )}
+                        </>
                       )}
                     </p>
                   </div>

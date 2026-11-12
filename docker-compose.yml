@@ -1,0 +1,49 @@
+services:
+  bd:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${CONTRASENA_ROOT_BD:-root_lira_2026}
+      MYSQL_DATABASE: ${NOMBRE_BD:-ingreso_lira}
+      MYSQL_USER: ${USUARIO_BD:-lira_app}
+      MYSQL_PASSWORD: ${CONTRASENA_BD:-lira_pass_2026}
+      TZ: America/Bogota            # CURRENT_DATE / CURRENT_TIME en hora de Colombia
+    volumes:
+      - datos_mysql:/var/lib/mysql
+      - ./Db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    ports:
+      - "127.0.0.1:3307:3306"       # solo para conectarte desde tu equipo (DBeaver, Workbench)
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p$${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      retries: 20
+
+  api:
+    build: ./server
+    restart: unless-stopped
+    environment:
+      PUERTO_SERVIDOR: 3006
+      HOST_BD: bd
+      PUERTO_BD: 3306
+      USUARIO_BD: ${USUARIO_BD:-lira_app}
+      CONTRASENA_BD: ${CONTRASENA_BD:-lira_pass_2026}
+      NOMBRE_BD: ${NOMBRE_BD:-ingreso_lira}
+      ORIGENES_CORS: ${ORIGENES_CORS:-http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173}
+      TZ: America/Bogota
+    depends_on:
+      bd:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      args:
+        VITE_UNIFI_API_BASE_URL: /api
+    restart: unless-stopped
+    ports:
+      - "${PUERTO_WEB:-8080}:80"
+    depends_on:
+      - api
+
+volumes:
+  datos_mysql:

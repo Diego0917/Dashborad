@@ -254,12 +254,15 @@ const Dashboard = () => {
 
     if (visita.id_qr) {
       const usados = Number(visita.usos_actuales) || 0;
-      const maximos = Number(visita.max_usos) || 2;
+      const maximos = Number(visita.max_usos) || 0;
       const estado = visita.estado_qr || 'ACTIVO';
-      if (usados === 0) {
-        return `0 de ${maximos} accesos (Esperando lectura del QR en cámara UniFi) · Estado: ${estado}`;
+      if (maximos === 0) {
+        return `Controlado solo por Tiempo de vida (${usados} lecturas registradas) · Estado: ${estado}`;
       }
-      return `${usados} de ${maximos} accesos utilizados · Estado: ${estado}`;
+      if (usados === 0) {
+        return `0 de ${maximos} usos configurados (Esperando lectura del QR en cámara UniFi) · Estado: ${estado}`;
+      }
+      return `${usados} de ${maximos} usos configurados · Estado: ${estado}`;
     }
 
     const tieneEntrada = Boolean(visita.hora_ingreso);

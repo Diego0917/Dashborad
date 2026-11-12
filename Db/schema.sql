@@ -1,13 +1,13 @@
---Creacion tabla roles
+-- Creacion tabla roles
 CREATE TABLE roles (
     id_rol INT AUTO_INCREMENT PRIMARY KEY,
     nombre_rol VARCHAR(50) NOT NULL UNIQUE
 );
 
---Ingreso de roles
+-- Ingreso de roles
 INSERT INTO roles (nombre_rol) VALUES ('Visitante'), ('Empleado'), ('Proveedor');
 
---Creacion tablas personas
+-- Creacion tablas personas
 CREATE TABLE personas (
     cedula VARCHAR(20) PRIMARY KEY,
     nombre_completo VARCHAR(100) NOT NULL,
@@ -20,7 +20,7 @@ CREATE TABLE personas (
     CONSTRAINT fk_persona_rol FOREIGN KEY (id_rol) REFERENCES roles(id_rol)
 );
 
---Creacion tabla registros
+-- Creacion tabla registros
 CREATE TABLE registros_ingreso (
     id_registro INT AUTO_INCREMENT PRIMARY KEY,
     cedula VARCHAR(20) NOT NULL,
@@ -37,7 +37,7 @@ CREATE TABLE registros_ingreso (
 -- CREATE INDEX idx_personas_nombre ON personas (nombre_completo);
 -- CREATE INDEX idx_registros_fecha_hora ON registros_ingreso (fecha_ingreso, hora_ingreso);
 
---Creacion tabla usuarios (acceso al Dashboard con autenticacion JWT)
+-- Creacion tabla usuarios (acceso al Dashboard con autenticacion JWT)
 CREATE TABLE IF NOT EXISTS usuarios (
     id_usuario INT AUTO_INCREMENT PRIMARY KEY,
     nombre_usuario VARCHAR(50) NOT NULL UNIQUE,
@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS usuarios (
     fecha_creacion TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
---Creacion tabla accesos_qr (control de tiempo de vida y usos de QR en UniFi Access)
+-- Creacion tabla accesos_qr (control de tiempo de vida y usos de QR en UniFi Access)
 CREATE TABLE IF NOT EXISTS accesos_qr (
     id_qr INT AUTO_INCREMENT PRIMARY KEY,
     id_registro INT NOT NULL UNIQUE,

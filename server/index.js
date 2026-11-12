@@ -150,6 +150,19 @@ const verificarConexionInicial = async () => {
 
 verificarConexionInicial();
 
+// Ruta pública de verificación de salud (healthcheck para Docker y monitoreo)
+aplicacion.get('/api/salud', async (_solicitud, respuesta) => {
+  try {
+    await poolBaseDatos.query('SELECT 1');
+    return respuesta.json({ estado: 'ok', bd: 'conectada' });
+  } catch (errorSalud) {
+    return respuesta.status(500).json({
+      estado: 'error',
+      mensaje: errorSalud.message,
+    });
+  }
+});
+
 // Middleware para verificar el token JWT en rutas protegidas
 const verificarTokenJwt = (solicitud, respuesta, siguiente) => {
   const cabeceraAutorizacion = solicitud.headers.authorization || '';
@@ -718,6 +731,7 @@ aplicacion.post('/api/visitas/con-qr', async (solicitud, respuesta) => {
       motivo = '',
       correo = '',
       puertas = [],
+      modoActivacion = 'ambos',
       ventanaSegundos,
       maxUsos,
     } = solicitud.body || {};
@@ -774,10 +788,20 @@ aplicacion.post('/api/visitas/con-qr', async (solicitud, respuesta) => {
         ? puertas.filter(Boolean)
         : [configUnifi.puertaDefecto];
 
-    const duracionVigencia =
-      Number(ventanaSegundos) >= 60 ? Number(ventanaSegundos) : configUnifi.ventanaSegundos;
-    const limiteUsos =
-      Number(maxUsos) >= 1 ? Number(maxUsos) : configUnifi.maxAccesos;
+    const esSoloTiempo = modoActivacion === 'tiempo' || Number(maxUsos) === 0;
+    const esSoloUsos = modoActivacion === 'usos';
+
+    const duracionVigencia = esSoloUsos
+      ? 86400 // 24 horas de margen en UniFi mientras completa los usos configurados
+      : Number(ventanaSegundos) >= 60
+        ? Number(ventanaSegundos)
+        : configUnifi.ventanaSegundos;
+
+    const limiteUsos = esSoloTiempo
+      ? 0
+      : Number(maxUsos) >= 1
+        ? Number(maxUsos)
+        : configUnifi.maxAccesos;
 
     const motivoLimpio = motivo ? String(motivo).trim() : 'Visita autorizada';
 
@@ -865,6 +889,7 @@ aplicacion.post('/api/visitas/con-qr', async (solicitud, respuesta) => {
       motivo: motivoLimpio,
       unifi_visitor_id: visitanteUnifi.visitorId,
       estado_qr: 'ACTIVO',
+      modo_activacion: esSoloTiempo ? 'tiempo' : esSoloUsos ? 'usos' : 'ambos',
       usos_actuales: 0,
       max_usos: limiteUsos,
       inicio_timestamp: visitanteUnifi.inicioTimestamp,
@@ -1106,8 +1131,8 @@ const procesarCicloMonitoreoQr = async () => {
           );
         }
 
-        // Caso 1: Alcanzó el máximo de usos (ej. 1 entrada + 1 salida = 2 aperturas)
-        if (totalAccesosConcedidos >= qr.max_usos) {
+        // Caso 1: Alcanzó el máximo de usos configurados (solo aplica cuando max_usos > 0)
+        if (Number(qr.max_usos) > 0 && totalAccesosConcedidos >= Number(qr.max_usos)) {
           console.log(
             `[Monitor QR] Visitante ${qr.unifi_visitor_id} completó ${totalAccesosConcedidos}/${qr.max_usos} usos. Registrando salida y revocando QR...`
           );
