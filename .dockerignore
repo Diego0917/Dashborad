@@ -5,3 +5,4 @@ Db
 .git
 .env
 .env.*
+.env.example
