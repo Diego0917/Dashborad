@@ -26,8 +26,10 @@ const obtenerConfiguracionUnifi = () => {
   };
 };
 
-// Endpoints equivalentes a access.py
+// Endpoints equivalentes a access.py + usuarios permanentes (empleados con rostro)
 const EP_VISITORS = '/visitors';
+const EP_USERS = '/users';
+const EP_USERS_SEARCH = '/users/search';
 const EP_DOORS = '/doors';
 const EP_TOPOLOGY = '/door_groups/topology';
 const EP_SYSTEM_LOGS = '/system/logs';
@@ -553,6 +555,108 @@ const obtenerPuertaDeEventoUnifi = (evento) => {
 };
 
 /**
+ * Normaliza un objeto de usuario devuelto por /api/v1/developer/users/search o /users.
+ * Estos usuarios corresponden normalmente a empleados con reconocimiento facial / NFC cargado en UniFi.
+ */
+const normalizarUsuarioUnifi = (u) => {
+  if (!u || typeof u !== 'object') return null;
+  const unifiId = String(u.id || u.identity_id || u.user_id || '').trim();
+  if (!unifiId) return null;
+
+  const nombre = String(u.first_name || '').trim();
+  const apellido = String(u.last_name || '').trim();
+  const nombreCompleto =
+    String(u.full_name || `${nombre} ${apellido}`).trim() || 'Empleado UniFi';
+
+  // En UniFi Access, el documento o código de empleado suele almacenarse en employee_number
+  const documentoEmpleado = String(
+    u.employee_number || u.employee_id || u.card_number || ''
+  ).trim();
+  const cedula =
+    documentoEmpleado || `UNIFI-${unifiId.replace(/-/g, '').slice(0, 10).toUpperCase()}`;
+
+  const telefono =
+    String(u.mobile_phone || u.phone || u.phone_number || '').trim() || null;
+  const correo = String(u.user_email || u.email || '').trim() || null;
+  const estado = String(u.status || 'ACTIVE').toUpperCase();
+
+  return {
+    unifi_user_id: unifiId,
+    cedula,
+    tiene_documento_propio: Boolean(documentoEmpleado),
+    nombre_completo: nombreCompleto,
+    telefono,
+    correo,
+    estado,
+    id_rol: 2, // 2 = Empleado
+  };
+};
+
+/**
+ * 5) BUSCAR / TRAER USUARIOS REGISTRADOS EN UNIFI ACCESS (GET /api/v1/developer/users/search)
+ * Consulta los usuarios que ya están cargados en UniFi Access (ej. empleados con registro facial).
+ */
+const buscarUsuariosUnifi = async (keyword = '') => {
+  const termino = String(keyword || '').trim();
+  const sufijoQuery = termino
+    ? `?keyword=${encodeURIComponent(termino)}`
+    : '?keyword=';
+
+  let datos;
+  try {
+    datos = await peticionUnifi('GET', `${EP_USERS_SEARCH}${sufijoQuery}`);
+  } catch (errorSearch) {
+    // Si la versión de firmware exige keyword no vacío en /users/search, intentamos /users como respaldo
+    if (!termino) {
+      datos = await peticionUnifi('GET', EP_USERS);
+    } else {
+      throw errorSearch;
+    }
+  }
+
+  let listaCruda = datos && typeof datos === 'object' && 'data' in datos ? datos.data : datos;
+  if (listaCruda && typeof listaCruda === 'object' && !Array.isArray(listaCruda)) {
+    for (const valor of Object.values(listaCruda)) {
+      if (Array.isArray(valor)) {
+        listaCruda = valor;
+        break;
+      }
+    }
+  }
+
+  if (!Array.isArray(listaCruda)) {
+    return [];
+  }
+
+  return listaCruda
+    .map(normalizarUsuarioUnifi)
+    .filter((item) => item !== null && item.estado !== 'DELETED');
+};
+
+/**
+ * 6) OBTENER LOGS GENERALES DE APERTURA DE PUERTA (para detectar entradas/salidas por rostro de empleados)
+ */
+const obtenerLogsPuertasGeneralesUnifi = async (desdeTimestamp) => {
+  const cuerpo = {
+    topic: 'door_openings',
+    since: Number(desdeTimestamp) || Math.floor(Date.now() / 1000) - 300,
+    until: Math.floor(Date.now() / 1000),
+    page_num: 1,
+    page_size: 100,
+  };
+
+  const datos = await peticionUnifi('POST', EP_SYSTEM_LOGS, cuerpo);
+  if (datos && typeof datos === 'object') {
+    const interno = datos.data ?? [];
+    if (Array.isArray(interno)) return interno;
+    if (interno && typeof interno === 'object' && Array.isArray(interno.hits)) {
+      return interno.hits;
+    }
+  }
+  return Array.isArray(datos) ? datos : [];
+};
+
+/**
  * Envía el código QR (PNG con margen blanco quiet-zone) al correo electrónico del visitante.
  */
 const enviarQrPorCorreo = async ({
@@ -644,6 +748,8 @@ module.exports = {
   idsTodasLasPuertasUnifi,
   generarQrVisitanteUnifi,
   obtenerLogsVisitanteUnifi,
+  obtenerLogsPuertasGeneralesUnifi,
+  buscarUsuariosUnifi,
   esAccesoConcedidoUnifi,
   obtenerPuertaDeEventoUnifi,
   enviarQrPorCorreo,

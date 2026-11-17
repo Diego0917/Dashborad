@@ -15,6 +15,7 @@ CREATE TABLE personas (
     eps VARCHAR(50),
     arl VARCHAR(50),
     id_rol INT NOT NULL,
+    unifi_user_id VARCHAR(64) NULL UNIQUE,
     INDEX idx_personas_rol (id_rol),
     INDEX idx_personas_nombre (nombre_completo),
     CONSTRAINT fk_persona_rol FOREIGN KEY (id_rol) REFERENCES roles(id_rol)
@@ -28,6 +29,9 @@ CREATE TABLE registros_ingreso (
     fecha_ingreso DATE NOT NULL DEFAULT (CURRENT_DATE),
     hora_ingreso TIME NULL DEFAULT (CURRENT_TIME),
     hora_salida TIME NULL,
+    total_entradas INT NOT NULL DEFAULT 1,
+    total_salidas INT NOT NULL DEFAULT 0,
+    movimientos_json TEXT NULL,
     INDEX idx_registros_fecha_hora (fecha_ingreso, hora_ingreso),
     INDEX idx_registros_cedula (cedula),
     CONSTRAINT fk_registro_persona FOREIGN KEY (cedula) REFERENCES personas(cedula)

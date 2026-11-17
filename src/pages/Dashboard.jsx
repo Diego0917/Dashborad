@@ -21,7 +21,11 @@ import {
   esMismoDia,
   formatearDuracionLegible,
 } from '../utils/dateHelpers';
-import { obtenerVisitas, obtenerEstadisticasVisitas } from '../api/unifiApi';
+import {
+  obtenerVisitas,
+  obtenerEstadisticasVisitas,
+  sincronizarEmpleadosUnifi,
+} from '../api/unifiApi';
 import './Dashboard.css';
 
 const COLORES = ['#0066cc', '#38a169', '#dd6b20', '#805ad5', '#e53e3e'];
@@ -97,6 +101,8 @@ const Dashboard = () => {
   const [pestanaActiva, setPestanaActiva] = useState('listado');
   const [ultimaActualizacion, setUltimaActualizacion] = useState(null);
   const [visitaDetalleModal, setVisitaDetalleModal] = useState(null);
+  const [sincronizandoEmpleados, setSincronizandoEmpleados] = useState(false);
+  const [mensajeSincronizacion, setMensajeSincronizacion] = useState('');
 
   const consultarServidor = useCallback(async (filtrosActivos, pagina) => {
     const parametrosBase = construirParametrosFiltroServidor(filtrosActivos);
@@ -217,6 +223,26 @@ const Dashboard = () => {
 
   const irAPaginaSiguiente = () => {
     setPaginaActual((paginaPrevia) => Math.min(totalPaginas, paginaPrevia + 1));
+  };
+
+  const manejarSincronizarEmpleados = async () => {
+    setSincronizandoEmpleados(true);
+    setErrorCarga('');
+    setMensajeSincronizacion('');
+    try {
+      const respuesta = await sincronizarEmpleadosUnifi();
+      setMensajeSincronizacion(
+        respuesta.mensaje || 'Empleados sincronizados desde UniFi Access correctamente.'
+      );
+      await cargarVisitas();
+    } catch (errorSync) {
+      setErrorCarga(
+        errorSync?.response?.data?.error ||
+          'No se pudo sincronizar con UniFi Access (/api/v1/developer/users/search).'
+      );
+    } finally {
+      setSincronizandoEmpleados(false);
+    }
   };
 
   const formatearTiempoVidaVisita = (visita) => {
@@ -404,6 +430,15 @@ const Dashboard = () => {
           </button>
           <button
             type="button"
+            onClick={manejarSincronizarEmpleados}
+            disabled={sincronizandoEmpleados}
+            className="refresh-button"
+            title="Traer empleados cargados con rostro en UniFi Access (/api/v1/developer/users/search)"
+          >
+            {sincronizandoEmpleados ? 'Sincronizando...' : 'Sincronizar Empleados UniFi'}
+          </button>
+          <button
+            type="button"
             onClick={cargarVisitas}
             disabled={cargando}
             className="refresh-button"
@@ -517,6 +552,9 @@ const Dashboard = () => {
       {pestanaActiva === 'listado' && (
         <main className="dashboard-content">
           {errorCarga && <div className="error-banner">{errorCarga}</div>}
+          {mensajeSincronizacion && (
+            <div className="success-banner">{mensajeSincronizacion}</div>
+          )}
 
           {cargando && visitasPagina.length === 0 ? (
             <p>Cargando...</p>
@@ -590,14 +628,28 @@ const Dashboard = () => {
                             <td>{formatearFechaLegible(visita.fecha_ingreso)}</td>
                             <td>
                               {haIngresado ? (
-                                visita.hora_ingreso
+                                <>
+                                  {visita.hora_ingreso}
+                                  {Number(visita.total_entradas) > 1 && (
+                                    <span className="texto-pendiente" style={{ marginLeft: '0.35rem', fontWeight: 600 }}>
+                                      ({visita.total_entradas} ent.)
+                                    </span>
+                                  )}
+                                </>
                               ) : (
                                 <span className="texto-pendiente">Sin ingresar aún</span>
                               )}
                             </td>
                             <td>
                               {tieneSalida ? (
-                                visita.hora_salida
+                                <>
+                                  {visita.hora_salida}
+                                  {Number(visita.total_salidas) > 1 && (
+                                    <span className="texto-pendiente" style={{ marginLeft: '0.35rem', fontWeight: 600 }}>
+                                      ({visita.total_salidas} sal.)
+                                    </span>
+                                  )}
+                                </>
                               ) : esQrSinLlegada ? (
                                 visita.estado_qr === 'EXPIRADO' ? (
                                   <span className="badge-qr-expirado">QR Expirado (No llegó)</span>
@@ -609,7 +661,12 @@ const Dashboard = () => {
                                   </span>
                                 )
                               ) : sigueEnEdificioHoy ? (
-                                <span className="badge-en-edificio">En el edificio</span>
+                                <span className="badge-en-edificio">
+                                  En el edificio
+                                  {(Number(visita.total_entradas) > 1 ||
+                                    Number(visita.total_salidas) > 0) &&
+                                    ` (${visita.total_entradas || 1} ent. / ${visita.total_salidas || 0} sal.)`}
+                                </span>
                               ) : (
                                 <span className="texto-pendiente">Sin registrar</span>
                               )}
@@ -691,6 +748,58 @@ const Dashboard = () => {
                     <p className="modal-detail-value">
                       {visitaDetalleModal.motivo || 'Sin motivo registrado'}
                     </p>
+                  </div>
+
+                  <div className="modal-detail-item">
+                    <span className="modal-detail-label">
+                      Veces de Entrada y Salida en este registro
+                    </span>
+                    <p className="modal-detail-value">
+                      <strong>
+                        {Boolean(visitaDetalleModal.id_qr) &&
+                        Number(visitaDetalleModal.usos_actuales) === 0
+                          ? 0
+                          : Number(visitaDetalleModal.total_entradas) ||
+                            (visitaDetalleModal.hora_ingreso ? 1 : 0)}{' '}
+                        entrada(s)
+                      </strong>{' '}
+                      ·{' '}
+                      <strong>
+                        {Number(visitaDetalleModal.total_salidas) ||
+                          (visitaDetalleModal.hora_salida ? 1 : 0)}{' '}
+                        salida(s)
+                      </strong>
+                    </p>
+                    {(() => {
+                      try {
+                        const listaMovs = JSON.parse(
+                          visitaDetalleModal.movimientos_json || '[]'
+                        );
+                        if (Array.isArray(listaMovs) && listaMovs.length > 0) {
+                          return (
+                            <ul
+                              style={{
+                                margin: '0.5rem 0 0 0',
+                                paddingLeft: '1.1rem',
+                                fontSize: '0.84rem',
+                                color: '#4a5568',
+                              }}
+                            >
+                              {listaMovs.map((m, idx) => (
+                                <li key={`${m.tipo}-${m.hora}-${idx}`}>
+                                  <strong>{m.tipo}:</strong> {m.hora}
+                                  {m.puerta ? ` (${m.puerta})` : ''}
+                                  {m.detalle ? ` — ${m.detalle}` : ''}
+                                </li>
+                              ))}
+                            </ul>
+                          );
+                        }
+                      } catch {
+                        // Sin movimientos JSON
+                      }
+                      return null;
+                    })()}
                   </div>
 
                   <div className="modal-detail-item">

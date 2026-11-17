@@ -158,4 +158,23 @@ export const revocarQrVisita = async (idRegistro) => {
   return respuesta.data;
 };
 
+/**
+ * BUSCAR USUARIOS / EMPLEADOS REGISTRADOS CON ROSTRO EN UNIFI ACCESS
+ * Consume GET /api/v1/developer/users/search a través del backend
+ */
+export const buscarUsuariosUnifiApi = async (keyword = '') => {
+  const respuesta = await api.get('/unifi/usuarios/buscar', {
+    params: { keyword },
+  });
+  return respuesta.data;
+};
+
+/**
+ * SINCRONIZAR EMPLEADOS DESDE UNIFI ACCESS HACIA LA TABLA PERSONAS DE MYSQL
+ */
+export const sincronizarEmpleadosUnifi = async () => {
+  const respuesta = await api.post('/unifi/usuarios/sincronizar');
+  return respuesta.data;
+};
+
 export default api;

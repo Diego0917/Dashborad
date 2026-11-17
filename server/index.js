@@ -13,6 +13,8 @@ const {
   listarPuertasUnifi,
   generarQrVisitanteUnifi,
   obtenerLogsVisitanteUnifi,
+  obtenerLogsPuertasGeneralesUnifi,
+  buscarUsuariosUnifi,
   esAccesoConcedidoUnifi,
   obtenerPuertaDeEventoUnifi,
   enviarQrPorCorreo,
@@ -133,6 +135,37 @@ const asegurarTablaAccesosQr = async () => {
       SET registros_ingreso.hora_ingreso = NULL
       WHERE accesos_qr.usos_actuales = 0 AND registros_ingreso.hora_salida IS NULL
     `)
+    .catch(() => {});
+
+  // Asegurar columna unifi_user_id en personas para vincular empleados cargados con rostro en UniFi Access
+  await poolBaseDatos
+    .query('ALTER TABLE personas ADD COLUMN unifi_user_id VARCHAR(64) NULL UNIQUE')
+    .catch(() => {});
+
+  // Tabla auxiliar para evitar duplicar eventos de entrada/salida por rostro de empleados en /system/logs
+  await poolBaseDatos
+    .query(`
+      CREATE TABLE IF NOT EXISTS eventos_empleados_unifi (
+        id_evento VARCHAR(128) PRIMARY KEY,
+        unifi_user_id VARCHAR(64) NOT NULL,
+        fecha_creacion TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `)
+    .catch(() => {});
+
+  // Columnas acumuladoras de entradas y salidas en el mismo registro diario
+  await poolBaseDatos
+    .query(
+      'ALTER TABLE registros_ingreso ADD COLUMN total_entradas INT NOT NULL DEFAULT 1'
+    )
+    .catch(() => {});
+  await poolBaseDatos
+    .query(
+      'ALTER TABLE registros_ingreso ADD COLUMN total_salidas INT NOT NULL DEFAULT 0'
+    )
+    .catch(() => {});
+  await poolBaseDatos
+    .query('ALTER TABLE registros_ingreso ADD COLUMN movimientos_json TEXT NULL')
     .catch(() => {});
 };
 
@@ -351,6 +384,9 @@ aplicacion.get('/api/visitas', verificarTokenJwt, async (solicitud, respuesta) =
         registros_ingreso.fecha_ingreso,
         registros_ingreso.hora_ingreso,
         registros_ingreso.hora_salida,
+        registros_ingreso.total_entradas,
+        registros_ingreso.total_salidas,
+        registros_ingreso.movimientos_json,
         accesos_qr.id_qr,
         accesos_qr.unifi_visitor_id,
         accesos_qr.estado AS estado_qr,
@@ -543,7 +579,7 @@ aplicacion.get('/api/visitas/estadisticas', verificarTokenJwt, async (solicitud,
 });
 
 // Ruta para registrar un nuevo ingreso (usada por registrarIngreso en React)
-aplicacion.post('/api/visitas', async (solicitud, respuesta) => {
+aplicacion.post('/api/visitas', verificarTokenJwt, async (solicitud, respuesta) => {
   try {
     const { cedula, motivo = null } = solicitud.body || {};
     const cedulaLimpia = String(cedula ?? '').trim();
@@ -564,14 +600,77 @@ aplicacion.post('/api/visitas', async (solicitud, respuesta) => {
     }
 
     const motivoLimpio = motivo ? String(motivo).trim() : null;
+    const horaActual = new Date().toTimeString().slice(0, 8);
+
+    // Verificar si ya existe un registro hoy para esta persona para acumular la entrada en el mismo registro
+    const [registroHoy] = await poolBaseDatos.query(
+      `SELECT id_registro, total_entradas, total_salidas, movimientos_json
+       FROM registros_ingreso
+       WHERE cedula = ? AND fecha_ingreso = CURRENT_DATE
+       ORDER BY id_registro DESC
+       LIMIT 1`,
+      [cedulaLimpia]
+    );
+
+    if (registroHoy.length > 0) {
+      const reg = registroHoy[0];
+      let listaMovimientos = [];
+      try {
+        listaMovimientos = JSON.parse(reg.movimientos_json || '[]');
+        if (!Array.isArray(listaMovimientos)) listaMovimientos = [];
+      } catch {
+        listaMovimientos = [];
+      }
+      listaMovimientos.push({
+        tipo: 'ENTRADA',
+        hora: horaActual,
+        detalle: motivoLimpio || 'Reingreso en el día',
+      });
+
+      const nuevasEntradas = (Number(reg.total_entradas) || 1) + 1;
+      await poolBaseDatos.query(
+        `UPDATE registros_ingreso
+         SET hora_ingreso = COALESCE(hora_ingreso, CURRENT_TIME),
+             hora_salida = NULL,
+             total_entradas = ?,
+             movimientos_json = ?,
+             motivo = COALESCE(?, motivo)
+         WHERE id_registro = ?`,
+        [
+          nuevasEntradas,
+          JSON.stringify(listaMovimientos),
+          motivoLimpio,
+          reg.id_registro,
+        ]
+      );
+
+      return respuesta.status(200).json({
+        mensaje: `Entrada #${nuevasEntradas} acumulada en el registro de hoy`,
+        id_registro: reg.id_registro,
+        total_entradas: nuevasEntradas,
+        total_salidas: Number(reg.total_salidas) || 0,
+      });
+    }
+
+    const movimientosIniciales = JSON.stringify([
+      {
+        tipo: 'ENTRADA',
+        hora: horaActual,
+        detalle: motivoLimpio || 'Ingreso inicial',
+      },
+    ]);
+
     const [resultadoInsercion] = await poolBaseDatos.query(
-      'INSERT INTO registros_ingreso (cedula, motivo) VALUES (?, ?)',
-      [cedulaLimpia, motivoLimpio]
+      `INSERT INTO registros_ingreso (cedula, motivo, total_entradas, total_salidas, movimientos_json)
+       VALUES (?, ?, 1, 0, ?)`,
+      [cedulaLimpia, motivoLimpio, movimientosIniciales]
     );
 
     return respuesta.status(201).json({
       mensaje: 'Ingreso registrado correctamente',
       id_registro: resultadoInsercion.insertId,
+      total_entradas: 1,
+      total_salidas: 0,
     });
   } catch (errorInsercion) {
     console.error('Error al registrar el ingreso:', errorInsercion);
@@ -580,25 +679,54 @@ aplicacion.post('/api/visitas', async (solicitud, respuesta) => {
 });
 
 // Ruta para registrar la hora de salida de una visita
-aplicacion.patch('/api/visitas/:idRegistro/salida', async (solicitud, respuesta) => {
+aplicacion.patch('/api/visitas/:idRegistro/salida', verificarTokenJwt, async (solicitud, respuesta) => {
   try {
     const idRegistro = Number(solicitud.params.idRegistro);
     if (!Number.isInteger(idRegistro) || idRegistro <= 0) {
       return respuesta.status(400).json({ error: 'Identificador de registro inválido' });
     }
 
-    const [resultadoActualizacion] = await poolBaseDatos.query(
-      'UPDATE registros_ingreso SET hora_salida = CURRENT_TIME WHERE id_registro = ? AND hora_salida IS NULL',
+    const [filasRegistro] = await poolBaseDatos.query(
+      'SELECT id_registro, total_salidas, movimientos_json FROM registros_ingreso WHERE id_registro = ? LIMIT 1',
       [idRegistro]
     );
 
-    if (resultadoActualizacion.affectedRows === 0) {
+    if (filasRegistro.length === 0) {
       return respuesta.status(404).json({
-        error: 'Registro no encontrado o ya cuenta con hora de salida',
+        error: 'Registro no encontrado',
       });
     }
 
-    return respuesta.json({ mensaje: 'Hora de salida registrada correctamente' });
+    const regActual = filasRegistro[0];
+    let listaMovimientos = [];
+    try {
+      listaMovimientos = JSON.parse(regActual.movimientos_json || '[]');
+      if (!Array.isArray(listaMovimientos)) listaMovimientos = [];
+    } catch {
+      listaMovimientos = [];
+    }
+
+    const horaActual = new Date().toTimeString().slice(0, 8);
+    listaMovimientos.push({
+      tipo: 'SALIDA',
+      hora: horaActual,
+      detalle: 'Salida registrada',
+    });
+
+    const nuevasSalidas = (Number(regActual.total_salidas) || 0) + 1;
+    await poolBaseDatos.query(
+      `UPDATE registros_ingreso
+       SET hora_salida = CURRENT_TIME,
+           total_salidas = ?,
+           movimientos_json = ?
+       WHERE id_registro = ?`,
+      [nuevasSalidas, JSON.stringify(listaMovimientos), idRegistro]
+    );
+
+    return respuesta.json({
+      mensaje: `Hora de salida #${nuevasSalidas} registrada correctamente`,
+      total_salidas: nuevasSalidas,
+    });
   } catch (errorSalida) {
     console.error('Error al registrar la salida:', errorSalida);
     return respuesta.status(500).json({ error: 'Error en el servidor al registrar salida' });
@@ -606,7 +734,7 @@ aplicacion.patch('/api/visitas/:idRegistro/salida', async (solicitud, respuesta)
 });
 
 // Ruta para registrar una persona nueva (usada por crearPersona en React)
-aplicacion.post('/api/personas', async (solicitud, respuesta) => {
+aplicacion.post('/api/personas', verificarTokenJwt, async (solicitud, respuesta) => {
   try {
     const {
       cedula,
@@ -657,7 +785,7 @@ aplicacion.post('/api/personas', async (solicitud, respuesta) => {
 });
 
 // Ruta para buscar una persona por cédula (autocompletado en formulario de validación/invitación)
-aplicacion.get('/api/personas/:cedula', async (solicitud, respuesta) => {
+aplicacion.get('/api/personas/:cedula', verificarTokenJwt, async (solicitud, respuesta) => {
   try {
     const cedulaLimpia = String(solicitud.params.cedula ?? '').trim();
     if (!cedulaLimpia) {
@@ -681,6 +809,46 @@ aplicacion.get('/api/personas/:cedula', async (solicitud, respuesta) => {
     );
 
     if (filas.length === 0) {
+      // Si no está aún en MySQL, intentar buscar en UniFi Access (/api/v1/developer/users/search)
+      try {
+        const usuariosUnifi = await buscarUsuariosUnifi(cedulaLimpia);
+        const coincidencia = usuariosUnifi.find(
+          (u) =>
+            u.cedula.toLowerCase() === cedulaLimpia.toLowerCase() ||
+            u.nombre_completo.toLowerCase().includes(cedulaLimpia.toLowerCase())
+        );
+
+        if (coincidencia) {
+          await poolBaseDatos.query(
+            `INSERT INTO personas (cedula, nombre_completo, telefono, id_rol, unifi_user_id)
+             VALUES (?, ?, ?, 2, ?)
+             ON DUPLICATE KEY UPDATE
+               nombre_completo = VALUES(nombre_completo),
+               telefono = COALESCE(VALUES(telefono), personas.telefono),
+               unifi_user_id = COALESCE(VALUES(unifi_user_id), personas.unifi_user_id)`,
+            [
+              coincidencia.cedula,
+              coincidencia.nombre_completo,
+              coincidencia.telefono,
+              coincidencia.unifi_user_id,
+            ]
+          );
+
+          return respuesta.json({
+            cedula: coincidencia.cedula,
+            nombre_completo: coincidencia.nombre_completo,
+            telefono: coincidencia.telefono,
+            eps: null,
+            arl: null,
+            id_rol: 2,
+            rol: 'Empleado',
+            unifi_user_id: coincidencia.unifi_user_id,
+          });
+        }
+      } catch {
+        // Si la consola UniFi no está alcanzable en este momento, continuar con 404 normal
+      }
+
       return respuesta.status(404).json({ error: 'Persona no encontrada' });
     }
 
@@ -691,8 +859,63 @@ aplicacion.get('/api/personas/:cedula', async (solicitud, respuesta) => {
   }
 });
 
+// Ruta para buscar usuarios (empleados con registro por rostro) directamente en UniFi Access via GET /api/v1/developer/users/search
+aplicacion.get('/api/unifi/usuarios/buscar', verificarTokenJwt, async (solicitud, respuesta) => {
+  try {
+    const keyword = String(solicitud.query.keyword ?? '').trim();
+    const usuarios = await buscarUsuariosUnifi(keyword);
+    return respuesta.json({
+      total: usuarios.length,
+      usuarios,
+    });
+  } catch (errorBuscarUnifi) {
+    console.error('Error al buscar usuarios en UniFi Access:', errorBuscarUnifi.message);
+    return respuesta.status(502).json({
+      error: `No se pudo consultar /api/v1/developer/users/search en UniFi Access: ${errorBuscarUnifi.message}`,
+    });
+  }
+});
+
+// Ruta para sincronizar los usuarios ya cargados en UniFi Access (empleados con rostro) hacia la tabla personas en MySQL
+aplicacion.post('/api/unifi/usuarios/sincronizar', verificarTokenJwt, async (_solicitud, respuesta) => {
+  try {
+    const usuariosUnifi = await buscarUsuariosUnifi('');
+    let sincronizados = 0;
+
+    for (const emp of usuariosUnifi) {
+      await poolBaseDatos.query(
+        `INSERT INTO personas (cedula, nombre_completo, telefono, id_rol, unifi_user_id)
+         VALUES (?, ?, ?, 2, ?)
+         ON DUPLICATE KEY UPDATE
+           nombre_completo = VALUES(nombre_completo),
+           telefono = COALESCE(VALUES(telefono), personas.telefono),
+           id_rol = VALUES(id_rol),
+           unifi_user_id = VALUES(unifi_user_id)`,
+        [
+          emp.cedula,
+          emp.nombre_completo,
+          emp.telefono,
+          emp.unifi_user_id,
+        ]
+      );
+      sincronizados += 1;
+    }
+
+    return respuesta.json({
+      mensaje: `Se sincronizaron ${sincronizados} empleados desde UniFi Access hacia la base de datos.`,
+      sincronizados,
+      usuarios: usuariosUnifi,
+    });
+  } catch (errorSincronizar) {
+    console.error('Error al sincronizar empleados de UniFi Access:', errorSincronizar.message);
+    return respuesta.status(502).json({
+      error: `No se pudo conectar con UniFi Access (/api/v1/developer/users/search): ${errorSincronizar.message}`,
+    });
+  }
+});
+
 // Ruta para listar puertas disponibles desde la consola UniFi Access
-aplicacion.get('/api/unifi/puertas', async (_solicitud, respuesta) => {
+aplicacion.get('/api/unifi/puertas', verificarTokenJwt, async (_solicitud, respuesta) => {
   const configUnifi = obtenerConfiguracionUnifi();
   try {
     const puertas = await listarPuertasUnifi();
@@ -719,7 +942,7 @@ aplicacion.get('/api/unifi/puertas', async (_solicitud, respuesta) => {
 });
 
 // Ruta para registrar los datos de validación de la persona, crear el ingreso y generar su código QR de invitación en UniFi Access
-aplicacion.post('/api/visitas/con-qr', async (solicitud, respuesta) => {
+aplicacion.post('/api/visitas/con-qr', verificarTokenJwt, async (solicitud, respuesta) => {
   try {
     const {
       cedula,
@@ -953,7 +1176,7 @@ aplicacion.get('/api/visitas/:idRegistro/qr', verificarTokenJwt, async (solicitu
 });
 
 // Ruta para enviar o reenviar el código QR de una visita por correo electrónico
-aplicacion.post('/api/visitas/:idRegistro/qr/correo', async (solicitud, respuesta) => {
+aplicacion.post('/api/visitas/:idRegistro/qr/correo', verificarTokenJwt, async (solicitud, respuesta) => {
   try {
     const idRegistro = Number(solicitud.params.idRegistro);
     const { correo } = solicitud.body || {};
@@ -1053,14 +1276,154 @@ aplicacion.delete('/api/visitas/:idRegistro/qr', verificarTokenJwt, async (solic
   }
 });
 
-// ── MONITOR EN SEGUNDO PLANO: Control de Tiempo de Vida y Usos (1 Entrada + 1 Salida) ──
+// ── MONITOR EN SEGUNDO PLANO: Control de Tiempo de Vida, Usos de QR y Entradas/Salidas por Rostro (Empleados) ──
 let monitoreoEnCurso = false;
+
+const procesarEventosRostroEmpleadosUnifi = async () => {
+  try {
+    const [empleadosVinculados] = await poolBaseDatos.query(
+      'SELECT cedula, nombre_completo, unifi_user_id FROM personas WHERE unifi_user_id IS NOT NULL'
+    );
+    if (empleadosVinculados.length === 0) return;
+
+    const mapaPorUnifiId = new Map();
+    for (const emp of empleadosVinculados) {
+      mapaPorUnifiId.set(String(emp.unifi_user_id), emp);
+    }
+
+    const desdeSeg = Math.floor(Date.now() / 1000) - 300;
+    const eventos = await obtenerLogsPuertasGeneralesUnifi(desdeSeg);
+
+    for (const ev of eventos) {
+      const src = (ev && (ev._source || ev)) || {};
+      const actorId = String(src.actor?.id || '').trim();
+      const evId = String(ev._id || ev.id || ev['@timestamp'] || '').trim();
+
+      if (!evId || !actorId || !mapaPorUnifiId.has(actorId)) continue;
+      if (!esAccesoConcedidoUnifi(ev, actorId)) continue;
+
+      const [yaProcesado] = await poolBaseDatos.query(
+        'SELECT id_evento FROM eventos_empleados_unifi WHERE id_evento = ? LIMIT 1',
+        [evId]
+      );
+      if (yaProcesado.length > 0) continue;
+
+      await poolBaseDatos.query(
+        'INSERT IGNORE INTO eventos_empleados_unifi (id_evento, unifi_user_id) VALUES (?, ?)',
+        [evId, actorId]
+      );
+
+      const empleado = mapaPorUnifiId.get(actorId);
+      const puertaNombre = obtenerPuertaDeEventoUnifi(ev);
+      const horaActual = new Date().toTimeString().slice(0, 8);
+
+      // Buscar el único registro diario del empleado hoy (tenga o no hora_salida previa)
+      const [registroDia] = await poolBaseDatos.query(
+        `SELECT id_registro, hora_ingreso, hora_salida, total_entradas, total_salidas, movimientos_json
+         FROM registros_ingreso
+         WHERE cedula = ? AND fecha_ingreso = CURRENT_DATE
+         ORDER BY id_registro DESC
+         LIMIT 1`,
+        [empleado.cedula]
+      );
+
+      if (registroDia.length === 0) {
+        // 1.ª lectura del día: crear el único registro diario con total_entradas = 1, total_salidas = 0
+        const movimientosIniciales = JSON.stringify([
+          {
+            tipo: 'ENTRADA',
+            hora: horaActual,
+            puerta: puertaNombre,
+          },
+        ]);
+
+        await poolBaseDatos.query(
+          `INSERT INTO registros_ingreso (
+            cedula,
+            motivo,
+            fecha_ingreso,
+            hora_ingreso,
+            hora_salida,
+            total_entradas,
+            total_salidas,
+            movimientos_json
+          ) VALUES (?, ?, CURRENT_DATE, CURRENT_TIME, NULL, 1, 0, ?)`,
+          [
+            empleado.cedula,
+            `Ingreso por reconocimiento facial (${puertaNombre})`,
+            movimientosIniciales,
+          ]
+        );
+        console.log(
+          `[Monitor Rostro UniFi] Entrada #1 del día registrada para ${empleado.nombre_completo} (${empleado.cedula}) en '${puertaNombre}'`
+        );
+      } else {
+        const reg = registroDia[0];
+        let movimientos = [];
+        try {
+          movimientos = JSON.parse(reg.movimientos_json || '[]');
+          if (!Array.isArray(movimientos)) movimientos = [];
+        } catch {
+          movimientos = [];
+        }
+
+        const estaDentroActualmente = reg.hora_ingreso && !reg.hora_salida;
+
+        if (estaDentroActualmente) {
+          // Estaba dentro del edificio -> Esta lectura en cámara es una SALIDA
+          const nuevasSalidas = (Number(reg.total_salidas) || 0) + 1;
+          movimientos.push({
+            tipo: 'SALIDA',
+            hora: horaActual,
+            puerta: puertaNombre,
+          });
+
+          await poolBaseDatos.query(
+            `UPDATE registros_ingreso
+             SET hora_salida = CURRENT_TIME,
+                 total_salidas = ?,
+                 movimientos_json = ?
+             WHERE id_registro = ?`,
+            [nuevasSalidas, JSON.stringify(movimientos), reg.id_registro]
+          );
+          console.log(
+            `[Monitor Rostro UniFi] Salida #${nuevasSalidas} acumulada en el mismo registro para ${empleado.nombre_completo} (${empleado.cedula})`
+          );
+        } else {
+          // Había salido previamente hoy -> Esta lectura en cámara es un REINGRESO en el mismo registro
+          const nuevasEntradas = (Number(reg.total_entradas) || 0) + 1;
+          movimientos.push({
+            tipo: 'ENTRADA',
+            hora: horaActual,
+            puerta: puertaNombre,
+          });
+
+          await poolBaseDatos.query(
+            `UPDATE registros_ingreso
+             SET hora_ingreso = COALESCE(hora_ingreso, CURRENT_TIME),
+                 hora_salida = NULL,
+                 total_entradas = ?,
+                 movimientos_json = ?
+             WHERE id_registro = ?`,
+            [nuevasEntradas, JSON.stringify(movimientos), reg.id_registro]
+          );
+          console.log(
+            `[Monitor Rostro UniFi] Entrada #${nuevasEntradas} acumulada en el mismo registro para ${empleado.nombre_completo} (${empleado.cedula})`
+          );
+        }
+      }
+    }
+  } catch {
+    // Si la consola UniFi no está disponible en la red actual, continuar silenciosamente
+  }
+};
 
 const procesarCicloMonitoreoQr = async () => {
   if (monitoreoEnCurso) return;
   monitoreoEnCurso = true;
 
   try {
+    await procesarEventosRostroEmpleadosUnifi();
     const [qrsActivos] = await poolBaseDatos.query(
       `SELECT
         id_qr,
