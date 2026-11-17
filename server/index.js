@@ -17,6 +17,8 @@ const {
   buscarUsuariosUnifi,
   esAccesoConcedidoUnifi,
   obtenerPuertaDeEventoUnifi,
+  esPuertaPrincipalUnifi,
+  obtenerDireccionYHoraEventoUnifi,
   enviarQrPorCorreo,
 } = require('./unifiAccess');
 
@@ -929,8 +931,23 @@ aplicacion.get('/api/unifi/puertas', verificarTokenJwt, async (_solicitud, respu
     return respuesta.json({
       puertas: [
         {
-          id: configUnifi.puertaDefecto,
-          nombre: 'Puerta Principal / Gestión Humana (Por defecto)',
+          id: 'ea3c1477-dd1c-4575-8b24-c916b46d0a90',
+          nombre: 'Puerta Ppal LIRA',
+          estado: 'configurada',
+        },
+        {
+          id: 'e38b8776-8756-4817-8569-6ef2aafb69c7',
+          nombre: 'Gestión Humana',
+          estado: 'configurada',
+        },
+        {
+          id: 'af2662da-ca97-4666-b61e-d6efe97021bf',
+          nombre: 'Puerta Vehicular',
+          estado: 'configurada',
+        },
+        {
+          id: '586eb5c6-2fcb-4ee3-a845-9de835cb1cdf',
+          nombre: 'Datacenter',
           estado: 'configurada',
         },
       ],
@@ -1008,8 +1025,18 @@ aplicacion.post('/api/visitas/con-qr', verificarTokenJwt, async (solicitud, resp
     const { nombres, apellidos } = dividirNombreCompleto(datosPersona.nombre_completo);
     const puertasSeleccionadas =
       Array.isArray(puertas) && puertas.length > 0
-        ? puertas.filter(Boolean)
-        : [configUnifi.puertaDefecto];
+        ? Array.from(new Set(puertas.map((p) => String(p).trim()).filter(Boolean)))
+        : [
+            'ea3c1477-dd1c-4575-8b24-c916b46d0a90',
+            'e38b8776-8756-4817-8569-6ef2aafb69c7',
+          ];
+
+    if (puertasSeleccionadas.length < 2) {
+      return respuesta.status(400).json({
+        error:
+          'Debes seleccionar mínimo 2 puertas (ej. Puerta Ppal LIRA + puerta interna) para habilitar el código QR.',
+      });
+    }
 
     const esSoloTiempo = modoActivacion === 'tiempo' || Number(maxUsos) === 0;
     const esSoloUsos = modoActivacion === 'usos';
@@ -1291,8 +1318,17 @@ const procesarEventosRostroEmpleadosUnifi = async () => {
       mapaPorUnifiId.set(String(emp.unifi_user_id), emp);
     }
 
-    const desdeSeg = Math.floor(Date.now() / 1000) - 300;
-    const eventos = await obtenerLogsPuertasGeneralesUnifi(desdeSeg);
+    // Consultar eventos desde el inicio del día actual
+    const inicioHoySeg = Math.floor(new Date().setHours(0, 0, 0, 0) / 1000);
+    const eventosCrudos = await obtenerLogsPuertasGeneralesUnifi(inicioHoySeg);
+
+    // UniFi devuelve los eventos del más reciente al más antiguo; los ordenamos cronológicamente
+    const eventos = [...eventosCrudos].sort((a, b) => {
+      const idA = Number(a?._id || 0);
+      const idB = Number(b?._id || 0);
+      if (idA && idB) return idA - idB;
+      return 0;
+    });
 
     for (const ev of eventos) {
       const src = (ev && (ev._source || ev)) || {};
@@ -1315,9 +1351,10 @@ const procesarEventosRostroEmpleadosUnifi = async () => {
 
       const empleado = mapaPorUnifiId.get(actorId);
       const puertaNombre = obtenerPuertaDeEventoUnifi(ev);
-      const horaActual = new Date().toTimeString().slice(0, 8);
+      const { direccion, hora: horaEvento } = obtenerDireccionYHoraEventoUnifi(ev);
+      const enPuertaPrincipal = esPuertaPrincipalUnifi(ev);
 
-      // Buscar el único registro diario del empleado hoy (tenga o no hora_salida previa)
+      // Buscar el único registro diario del empleado hoy
       const [registroDia] = await poolBaseDatos.query(
         `SELECT id_registro, hora_ingreso, hora_salida, total_entradas, total_salidas, movimientos_json
          FROM registros_ingreso
@@ -1328,11 +1365,12 @@ const procesarEventosRostroEmpleadosUnifi = async () => {
       );
 
       if (registroDia.length === 0) {
-        // 1.ª lectura del día: crear el único registro diario con total_entradas = 1, total_salidas = 0
+        // 1.ª lectura del día
+        const esSalidaDirecta = enPuertaPrincipal && direccion === 'exit';
         const movimientosIniciales = JSON.stringify([
           {
-            tipo: 'ENTRADA',
-            hora: horaActual,
+            tipo: esSalidaDirecta ? 'SALIDA' : 'ENTRADA',
+            hora: horaEvento,
             puerta: puertaNombre,
           },
         ]);
@@ -1347,15 +1385,19 @@ const procesarEventosRostroEmpleadosUnifi = async () => {
             total_entradas,
             total_salidas,
             movimientos_json
-          ) VALUES (?, ?, CURRENT_DATE, CURRENT_TIME, NULL, 1, 0, ?)`,
+          ) VALUES (?, ?, CURRENT_DATE, ?, ?, ?, ?, ?)`,
           [
             empleado.cedula,
             `Ingreso por reconocimiento facial (${puertaNombre})`,
+            horaEvento,
+            esSalidaDirecta ? horaEvento : null,
+            esSalidaDirecta ? 0 : 1,
+            esSalidaDirecta ? 1 : 0,
             movimientosIniciales,
           ]
         );
         console.log(
-          `[Monitor Rostro UniFi] Entrada #1 del día registrada para ${empleado.nombre_completo} (${empleado.cedula}) en '${puertaNombre}'`
+          `[Monitor Rostro UniFi] Primer registro del día (${esSalidaDirecta ? 'SALIDA' : 'ENTRADA'} a las ${horaEvento}) para ${empleado.nombre_completo} en '${puertaNombre}'`
         );
       } else {
         const reg = registroDia[0];
@@ -1367,48 +1409,69 @@ const procesarEventosRostroEmpleadosUnifi = async () => {
           movimientos = [];
         }
 
-        const estaDentroActualmente = reg.hora_ingreso && !reg.hora_salida;
+        const entradasPrevias = Number(reg.total_entradas) || 0;
+        const salidasPrevias = Number(reg.total_salidas) || 0;
 
-        if (estaDentroActualmente) {
-          // Estaba dentro del edificio -> Esta lectura en cámara es una SALIDA
-          const nuevasSalidas = (Number(reg.total_salidas) || 0) + 1;
+        // Determinar si es SALIDA: debe ser en Puerta Ppal LIRA y con lector 'exit' (o alternado si no trae dirección)
+        const esSalida =
+          enPuertaPrincipal &&
+          (direccion === 'exit' || (!direccion && entradasPrevias > salidasPrevias));
+        const esEntrada =
+          enPuertaPrincipal &&
+          (direccion === 'entry' || (!direccion && entradasPrevias <= salidasPrevias));
+
+        if (esSalida) {
+          const nuevasSalidas = salidasPrevias + 1;
           movimientos.push({
             tipo: 'SALIDA',
-            hora: horaActual,
+            hora: horaEvento,
             puerta: puertaNombre,
           });
 
           await poolBaseDatos.query(
             `UPDATE registros_ingreso
-             SET hora_salida = CURRENT_TIME,
+             SET hora_salida = ?,
                  total_salidas = ?,
                  movimientos_json = ?
              WHERE id_registro = ?`,
-            [nuevasSalidas, JSON.stringify(movimientos), reg.id_registro]
+            [horaEvento, nuevasSalidas, JSON.stringify(movimientos), reg.id_registro]
           );
           console.log(
-            `[Monitor Rostro UniFi] Salida #${nuevasSalidas} acumulada en el mismo registro para ${empleado.nombre_completo} (${empleado.cedula})`
+            `[Monitor Rostro UniFi] Salida #${nuevasSalidas} (${horaEvento}) en '${puertaNombre}' registrada para ${empleado.nombre_completo}`
           );
-        } else {
-          // Había salido previamente hoy -> Esta lectura en cámara es un REINGRESO en el mismo registro
-          const nuevasEntradas = (Number(reg.total_entradas) || 0) + 1;
+        } else if (esEntrada) {
+          // Reingreso en Puerta Principal: suma a total_entradas y CONSERVA la última hora_salida visible en la tabla
+          const nuevasEntradas = entradasPrevias + 1;
           movimientos.push({
             tipo: 'ENTRADA',
-            hora: horaActual,
+            hora: horaEvento,
             puerta: puertaNombre,
           });
 
           await poolBaseDatos.query(
             `UPDATE registros_ingreso
-             SET hora_ingreso = COALESCE(hora_ingreso, CURRENT_TIME),
-                 hora_salida = NULL,
+             SET hora_ingreso = COALESCE(hora_ingreso, ?),
                  total_entradas = ?,
                  movimientos_json = ?
              WHERE id_registro = ?`,
-            [nuevasEntradas, JSON.stringify(movimientos), reg.id_registro]
+            [horaEvento, nuevasEntradas, JSON.stringify(movimientos), reg.id_registro]
           );
           console.log(
-            `[Monitor Rostro UniFi] Entrada #${nuevasEntradas} acumulada en el mismo registro para ${empleado.nombre_completo} (${empleado.cedula})`
+            `[Monitor Rostro UniFi] Entrada #${nuevasEntradas} (${horaEvento}) en '${puertaNombre}' acumulada para ${empleado.nombre_completo}`
+          );
+        } else {
+          // Puerta interna (ej. Gestión Humana): no altera hora_salida ni contadores de salida del edificio
+          movimientos.push({
+            tipo: 'ACCESO_INTERNO',
+            hora: horaEvento,
+            puerta: puertaNombre,
+          });
+
+          await poolBaseDatos.query(
+            `UPDATE registros_ingreso
+             SET movimientos_json = ?
+             WHERE id_registro = ?`,
+            [JSON.stringify(movimientos), reg.id_registro]
           );
         }
       }
@@ -1454,6 +1517,7 @@ const procesarCicloMonitoreoQr = async () => {
 
         const conjuntoVistos = new Set(eventosVistos);
         let huboCambioEventos = false;
+        let huboSalidaPuertaPrincipal = false;
 
         // Consultar logs de apertura de puerta en UniFi Access desde inicio_timestamp
         try {
@@ -1467,8 +1531,12 @@ const procesarCicloMonitoreoQr = async () => {
             if (!evId || conjuntoVistos.has(evId)) continue;
 
             if (esAccesoConcedidoUnifi(ev, qr.unifi_visitor_id)) {
+              const indiceLectura = conjuntoVistos.size + 1;
               conjuntoVistos.add(evId);
               huboCambioEventos = true;
+              if (indiceLectura >= 2 && esPuertaPrincipalUnifi(ev)) {
+                huboSalidaPuertaPrincipal = true;
+              }
               console.log(
                 `[Monitor QR] Acceso CONCEDIDO #${conjuntoVistos.size} para visitante ${qr.unifi_visitor_id} en '${obtenerPuertaDeEventoUnifi(ev)}'`
               );
@@ -1520,14 +1588,28 @@ const procesarCicloMonitoreoQr = async () => {
             ]
           );
 
-          // Registrar automáticamente la hora de salida en registros_ingreso
+          // Registrar automáticamente la hora de salida en registros_ingreso únicamente si la salida fue por la Puerta Principal
+          if (huboSalidaPuertaPrincipal) {
+            await poolBaseDatos.query(
+              `UPDATE registros_ingreso
+               SET hora_salida = CURRENT_TIME,
+                   total_salidas = total_salidas + 1
+               WHERE id_registro = ? AND hora_salida IS NULL`,
+              [qr.id_registro]
+            );
+          }
+          continue;
+        }
+
+        // Si tuvo una lectura de salida en la Puerta Principal antes de agotar todos los usos
+        if (huboSalidaPuertaPrincipal) {
           await poolBaseDatos.query(
             `UPDATE registros_ingreso
-             SET hora_salida = CURRENT_TIME
+             SET hora_salida = CURRENT_TIME,
+                 total_salidas = total_salidas + 1
              WHERE id_registro = ? AND hora_salida IS NULL`,
             [qr.id_registro]
           );
-          continue;
         }
 
         // Caso 2: Venció la ventana de tiempo (ej. 1 hora) sin completar todos los usos

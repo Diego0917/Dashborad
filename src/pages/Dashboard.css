@@ -737,3 +737,122 @@
   font-size: 0.92rem;
 }
 
+.invitacion-doors-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 0.6rem;
+}
+
+.invitacion-door-item {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.6rem 0.85rem;
+  border: 1px solid #cbd5e0;
+  border-radius: 6px;
+  background-color: #f8fafc;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #2d3748;
+  transition: all 0.15s ease;
+}
+
+.invitacion-door-item.selected {
+  border-color: #0066cc;
+  background-color: #ebf8ff;
+  color: #1a365d;
+}
+
+.invitacion-door-item input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  accent-color: #0066cc;
+  cursor: pointer;
+}
+
+/* Encabezado exclusivo para exportación PDF */
+.print-report-header {
+  display: none;
+}
+
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 12mm;
+  }
+
+  body,
+  .dashboard-container {
+    background-color: #ffffff !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  .dashboard-header,
+  .tabs-bar,
+  .filters-bar,
+  .stats-header,
+  .no-print {
+    display: none !important;
+  }
+
+  .dashboard-content {
+    padding: 0 !important;
+  }
+
+  .print-report-header {
+    display: flex !important;
+    align-items: center;
+    gap: 1.25rem;
+    padding-bottom: 0.85rem;
+    margin-bottom: 1.25rem;
+    border-bottom: 2px solid #0066cc;
+  }
+
+  .print-report-logo {
+    height: 54px;
+    width: auto;
+    object-fit: contain;
+  }
+
+  .print-report-meta h1 {
+    margin: 0;
+    font-size: 1.35rem;
+    color: #1a202c;
+  }
+
+  .print-report-meta p {
+    margin: 0.25rem 0 0 0;
+    font-size: 0.85rem;
+    color: #4a5568;
+  }
+
+  .kpi-grid {
+    grid-template-columns: repeat(4, 1fr) !important;
+    gap: 0.75rem !important;
+    margin-bottom: 1rem !important;
+    break-inside: avoid;
+  }
+
+  .kpi-card {
+    padding: 1rem !important;
+    box-shadow: none !important;
+    border: 1px solid #e2e8f0 !important;
+    border-left-width: 4px !important;
+  }
+
+  .charts-grid {
+    grid-template-columns: 1fr 1fr !important;
+    gap: 1rem !important;
+  }
+
+  .chart-card {
+    box-shadow: none !important;
+    border: 1px solid #e2e8f0 !important;
+    padding: 1rem !important;
+    break-inside: avoid;
+  }
+}
+
+

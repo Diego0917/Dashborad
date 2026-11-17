@@ -25,7 +25,9 @@ import {
   obtenerVisitas,
   obtenerEstadisticasVisitas,
   sincronizarEmpleadosUnifi,
+  revocarQrVisita,
 } from '../api/unifiApi';
+import logoLira from '../assets/logo-lira.png';
 import './Dashboard.css';
 
 const COLORES = ['#0066cc', '#38a169', '#dd6b20', '#805ad5', '#e53e3e'];
@@ -103,6 +105,7 @@ const Dashboard = () => {
   const [visitaDetalleModal, setVisitaDetalleModal] = useState(null);
   const [sincronizandoEmpleados, setSincronizandoEmpleados] = useState(false);
   const [mensajeSincronizacion, setMensajeSincronizacion] = useState('');
+  const [revocandoQr, setRevocandoQr] = useState(false);
 
   const consultarServidor = useCallback(async (filtrosActivos, pagina) => {
     const parametrosBase = construirParametrosFiltroServidor(filtrosActivos);
@@ -242,6 +245,30 @@ const Dashboard = () => {
       );
     } finally {
       setSincronizandoEmpleados(false);
+    }
+  };
+
+  const manejarCancelarInvitacionModal = async () => {
+    if (!visitaDetalleModal?.id_registro || revocandoQr) return;
+    setRevocandoQr(true);
+    setErrorCarga('');
+    setMensajeSincronizacion('');
+    try {
+      const respuesta = await revocarQrVisita(visitaDetalleModal.id_registro);
+      setVisitaDetalleModal((prev) =>
+        prev ? { ...prev, estado_qr: 'REVOCADO' } : null
+      );
+      setMensajeSincronizacion(
+        respuesta.mensaje || 'Invitación QR cancelada y revocada en UniFi Access.'
+      );
+      await cargarVisitas();
+    } catch (errorRevocar) {
+      setErrorCarga(
+        errorRevocar?.response?.data?.error ||
+          'No se pudo cancelar la invitación QR.'
+      );
+    } finally {
+      setRevocandoQr(false);
     }
   };
 
@@ -404,16 +431,48 @@ const Dashboard = () => {
   }, [estadisticasServidor]);
 
   const esFiltroHoy = filtrosAplicados.periodo === 'hoy';
+  const tituloEstadisticas = useMemo(() => {
+    switch (filtrosAplicados.filtroRol) {
+      case 'Empleado':
+        return 'Estadísticas de empleados';
+      case 'Proveedor':
+        return 'Estadísticas de proveedores';
+      case 'Visitante':
+        return 'Estadísticas de visitantes';
+      default:
+        return 'Estadísticas de ingresos';
+    }
+  }, [filtrosAplicados.filtroRol]);
+
+  const etiquetaPersonasUnicas = useMemo(() => {
+    switch (filtrosAplicados.filtroRol) {
+      case 'Empleado':
+        return esFiltroHoy ? 'Empleados únicos hoy' : 'Empleados únicos';
+      case 'Proveedor':
+        return esFiltroHoy ? 'Proveedores únicos hoy' : 'Proveedores únicos';
+      case 'Visitante':
+        return esFiltroHoy ? 'Visitantes únicos hoy' : 'Visitantes únicos';
+      default:
+        return esFiltroHoy ? 'Personas únicas hoy' : 'Personas únicas';
+    }
+  }, [filtrosAplicados.filtroRol, esFiltroHoy]);
+
   const descripcionFiltroActivo = useMemo(() => {
-    const partes = [ETIQUETAS_PERIODO[filtrosAplicados.periodo] || 'Hoy'];
-    if (filtrosAplicados.filtroRol !== 'todos') {
-      partes.push(`Rol: ${filtrosAplicados.filtroRol}`);
-    }
-    if (filtrosAplicados.textoBusqueda) {
-      partes.push(`Búsqueda: "${filtrosAplicados.textoBusqueda}"`);
-    }
-    return partes.join(' · ');
-  }, [filtrosAplicados]);
+    return ETIQUETAS_PERIODO[filtrosAplicados.periodo] || 'Hoy';
+  }, [filtrosAplicados.periodo]);
+
+  const manejarDescargarReportePdf = () => {
+    const tituloAnterior = document.title;
+    const rolSufijo =
+      filtrosAplicados.filtroRol && filtrosAplicados.filtroRol !== 'todos'
+        ? filtrosAplicados.filtroRol
+        : 'General';
+    document.title = `Reporte_Estadisticas_Lira_${rolSufijo}_${descripcionFiltroActivo.replace(/\s+/g, '_')}`;
+    window.print();
+    setTimeout(() => {
+      document.title = tituloAnterior;
+    }, 500);
+  };
 
   return (
     <div className="dashboard-container">
@@ -612,13 +671,16 @@ const Dashboard = () => {
                               <a
                                 href={`#detalle-${visita.id_registro || visita.cedula}`}
                                 className="cedula-link"
-                                title="Haz clic para ver motivo de visita, accesos y tiempo de vida"
+                                title="Haz clic para ver los movimientos y el detalle del registro"
                                 onClick={(evento) => {
                                   evento.preventDefault();
                                   setVisitaDetalleModal(visita);
                                 }}
                               >
-                                {visita.cedula}
+                                {visita.rol === 'Empleado' ||
+                                String(visita.cedula || '').startsWith('UNIFI-')
+                                  ? 'Ver movimientos'
+                                  : visita.cedula}
                               </a>
                             </td>
                             <td>{visita.eps || 'N/A'}</td>
@@ -644,9 +706,14 @@ const Dashboard = () => {
                               {tieneSalida ? (
                                 <>
                                   {visita.hora_salida}
-                                  {Number(visita.total_salidas) > 1 && (
+                                  {Number(visita.total_salidas) >= 1 && (
                                     <span className="texto-pendiente" style={{ marginLeft: '0.35rem', fontWeight: 600 }}>
                                       ({visita.total_salidas} sal.)
+                                    </span>
+                                  )}
+                                  {Number(visita.total_entradas) > Number(visita.total_salidas) && (
+                                    <span className="badge-en-edificio" style={{ marginLeft: '0.45rem' }}>
+                                      Reingresó
                                     </span>
                                   )}
                                 </>
@@ -726,20 +793,15 @@ const Dashboard = () => {
                 <div className="modal-header">
                   <div>
                     <h3 id="modal-detalle-titulo" className="modal-title">
-                      Detalle de Ingreso — C.C. {visitaDetalleModal.cedula}
+                      {visitaDetalleModal.rol === 'Empleado' ||
+                      String(visitaDetalleModal.cedula || '').startsWith('UNIFI-')
+                        ? 'Detalle de Movimientos'
+                        : `Detalle de Ingreso — C.C. ${visitaDetalleModal.cedula}`}
                     </h3>
                     <p className="modal-subtitle">
                       {visitaDetalleModal.nombre_completo} ({visitaDetalleModal.rol})
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    className="modal-close-button"
-                    aria-label="Cerrar detalle"
-                    onClick={() => setVisitaDetalleModal(null)}
-                  >
-                    ✕
-                  </button>
                 </div>
 
                 <div className="modal-body">
@@ -802,19 +864,23 @@ const Dashboard = () => {
                     })()}
                   </div>
 
-                  <div className="modal-detail-item">
-                    <span className="modal-detail-label">Accesos del QR</span>
-                    <p className="modal-detail-value">
-                      {formatearAccesosVisita(visitaDetalleModal)}
-                    </p>
-                  </div>
+                  {visitaDetalleModal.rol !== 'Empleado' && Boolean(visitaDetalleModal.id_qr) && (
+                    <>
+                      <div className="modal-detail-item">
+                        <span className="modal-detail-label">Accesos del QR</span>
+                        <p className="modal-detail-value">
+                          {formatearAccesosVisita(visitaDetalleModal)}
+                        </p>
+                      </div>
 
-                  <div className="modal-detail-item">
-                    <span className="modal-detail-label">Tiempo de vida del QR</span>
-                    <p className="modal-detail-value">
-                      {formatearTiempoVidaVisita(visitaDetalleModal)}
-                    </p>
-                  </div>
+                      <div className="modal-detail-item">
+                        <span className="modal-detail-label">Tiempo de vida del QR</span>
+                        <p className="modal-detail-value">
+                          {formatearTiempoVidaVisita(visitaDetalleModal)}
+                        </p>
+                      </div>
+                    </>
+                  )}
 
                   <div className="modal-detail-grid">
                     <div>
@@ -837,7 +903,18 @@ const Dashboard = () => {
                   </div>
                 </div>
 
-                <div className="modal-footer">
+                <div className="modal-footer" style={{ gap: '0.75rem' }}>
+                  {Boolean(visitaDetalleModal.id_qr) &&
+                    visitaDetalleModal.estado_qr === 'ACTIVO' && (
+                      <button
+                        type="button"
+                        className="logout-button"
+                        disabled={revocandoQr}
+                        onClick={manejarCancelarInvitacionModal}
+                      >
+                        {revocandoQr ? 'Cancelando QR...' : 'Cancelar Invitación QR'}
+                      </button>
+                    )}
                   <button
                     type="button"
                     className="apply-filters-button"
@@ -856,15 +933,40 @@ const Dashboard = () => {
         <main className="dashboard-content">
           {errorCarga && <div className="error-banner">{errorCarga}</div>}
 
+          <div className="print-report-header">
+            <img src={logoLira} alt="Lira Seguridad" className="print-report-logo" />
+            <div className="print-report-meta">
+              <h1>
+                {tituloEstadisticas} ({descripcionFiltroActivo})
+              </h1>
+              <p>
+                <strong>Lira Seguridad</strong> · Generado por:{' '}
+                {usuario?.nombreUsuario || 'Administrador'} · Fecha:{' '}
+                {ultimaActualizacion
+                  ? `${ultimaActualizacion.toLocaleDateString('es-CO')} ${ultimaActualizacion.toLocaleTimeString('es-CO')}`
+                  : ''}
+              </p>
+            </div>
+          </div>
+
           <div className="stats-header">
             <div>
-              <h2 className="stats-title">Estadísticas de visitas ({descripcionFiltroActivo})</h2>
+              <h2 className="stats-title">
+                {tituloEstadisticas} ({descripcionFiltroActivo})
+              </h2>
               <p className="stats-subtitle">
                 {ultimaActualizacion
                   ? `Última actualización: ${ultimaActualizacion.toLocaleTimeString('es-CO')} — Se actualiza automáticamente cada 5 minutos`
                   : 'Cargando datos...'}
               </p>
             </div>
+            <button
+              type="button"
+              onClick={manejarDescargarReportePdf}
+              className="apply-filters-button no-print"
+            >
+              Descargar Reporte PDF
+            </button>
           </div>
 
           <div className="kpi-grid">
@@ -873,9 +975,7 @@ const Dashboard = () => {
               <p className="kpi-value">{totalEntradasPeriodo}</p>
             </div>
             <div className="kpi-card kpi-card--green">
-              <p className="kpi-label">
-                {esFiltroHoy ? 'Visitantes únicos hoy' : 'Visitantes únicos'}
-              </p>
+              <p className="kpi-label">{etiquetaPersonasUnicas}</p>
               <p className="kpi-value">{visitantesUnicosPeriodo}</p>
             </div>
             <div className="kpi-card kpi-card--orange">
@@ -884,7 +984,11 @@ const Dashboard = () => {
               <p className="kpi-detail">{detalleEnEdificio}</p>
             </div>
             <div className="kpi-card kpi-card--purple">
-              <p className="kpi-label">Tiempo promedio de visita</p>
+              <p className="kpi-label">
+                {filtrosAplicados.filtroRol === 'Empleado'
+                  ? 'Tiempo promedio de permanencia'
+                  : 'Tiempo promedio de visita'}
+              </p>
               <p className="kpi-value">{tiempoPromedioVisita}</p>
               <p className="kpi-detail">{detalleTiempoPromedio}</p>
             </div>

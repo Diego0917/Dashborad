@@ -1,14 +1,17 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   buscarPersonaPorCedula,
-  obtenerPuertasUnifi,
   registrarIngresoConQr,
   enviarQrVisitaCorreo,
 } from '../api/unifiApi';
 import './Dashboard.css';
 
-const PUERTA_UNIFI_POR_DEFECTO = 'e38b8776-8756-4817-8569-6ef2aafb69c7';
+const PUERTA_PPAL_LIRA = 'ea3c1477-dd1c-4575-8b24-c916b46d0a90';
+const PUERTA_GESTION_HUMANA = 'e38b8776-8756-4817-8569-6ef2aafb69c7';
+
+// Puertas asignadas automáticamente por defecto a cada visitante (Puerta Ppal LIRA + Gestión Humana)
+const PUERTAS_DEFECTO_VISITANTE = [PUERTA_PPAL_LIRA, PUERTA_GESTION_HUMANA];
 
 const FORMULARIO_INICIAL = {
   cedula: '',
@@ -19,7 +22,6 @@ const FORMULARIO_INICIAL = {
   arl: '',
   correo: '',
   motivo: '',
-  puertaId: PUERTA_UNIFI_POR_DEFECTO,
   modoActivacion: 'ambos',
   ventanaSegundos: '3600',
   maxUsos: '2',
@@ -30,42 +32,12 @@ const Invitacion = () => {
   const [formulario, setFormulario] = useState(FORMULARIO_INICIAL);
   const [personaExistente, setPersonaExistente] = useState(false);
   const [buscandoCedula, setBuscandoCedula] = useState(false);
-  const [puertasUnifi, setPuertasUnifi] = useState([
-    {
-      id: PUERTA_UNIFI_POR_DEFECTO,
-      nombre: 'Puerta Gestión Humana (Por defecto)',
-    },
-  ]);
   const [enviando, setEnviando] = useState(false);
   const [error, setError] = useState('');
   const [mensajeExito, setMensajeExito] = useState('');
   const [qrGenerado, setQrGenerado] = useState(null);
   const [correoReenvio, setCorreoReenvio] = useState('');
   const [enviandoCorreo, setEnviandoCorreo] = useState(false);
-
-  useEffect(() => {
-    let cancelado = false;
-    const cargarPuertas = async () => {
-      try {
-        const datos = await obtenerPuertasUnifi();
-        if (!cancelado && Array.isArray(datos?.puertas) && datos.puertas.length > 0) {
-          setPuertasUnifi(datos.puertas);
-          if (datos.puertaDefecto) {
-            setFormulario((prev) => ({
-              ...prev,
-              puertaId: prev.puertaId || datos.puertaDefecto,
-            }));
-          }
-        }
-      } catch {
-        // Conserva puerta por defecto
-      }
-    };
-    cargarPuertas();
-    return () => {
-      cancelado = true;
-    };
-  }, []);
 
   const manejarCambio = (campo, valor) => {
     setFormulario((prev) => ({ ...prev, [campo]: valor }));
@@ -122,7 +94,7 @@ const Invitacion = () => {
         arl: formulario.arl.trim() || null,
         correo: formulario.correo.trim() || '',
         motivo: formulario.motivo.trim() || 'Visita autorizada',
-        puertas: [formulario.puertaId || PUERTA_UNIFI_POR_DEFECTO],
+        puertas: PUERTAS_DEFECTO_VISITANTE,
         modoActivacion: formulario.modoActivacion,
         ventanaSegundos: Number(formulario.ventanaSegundos) || 3600,
         maxUsos: esSoloTiempo ? 0 : Math.max(1, Number(formulario.maxUsos) || 2),
@@ -308,71 +280,60 @@ const Invitacion = () => {
                 />
               </div>
 
-              <div className="filter-group">
-                <label htmlFor="inv-puerta">Puerta UniFi Access</label>
-                <select
-                  id="inv-puerta"
-                  value={formulario.puertaId}
-                  onChange={(e) => manejarCambio('puertaId', e.target.value)}
-                >
-                  {puertasUnifi.map((puerta) => (
-                    <option key={puerta.id} value={puerta.id}>
-                      {puerta.nombre}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {formulario.id_rol !== '2' && (
+                <>
+                  <div className="filter-group">
+                    <label htmlFor="inv-modo">Modo de activación del QR *</label>
+                    <select
+                      id="inv-modo"
+                      value={formulario.modoActivacion}
+                      onChange={(e) => manejarCambio('modoActivacion', e.target.value)}
+                    >
+                      <option value="ambos">Por Tiempo de vida y Cantidad de usos</option>
+                      <option value="tiempo">Solo por Tiempo de vida (Sin límite de usos)</option>
+                      <option value="usos">Solo por Cantidad de usos</option>
+                    </select>
+                  </div>
 
-              <div className="filter-group">
-                <label htmlFor="inv-modo">Modo de activación del QR *</label>
-                <select
-                  id="inv-modo"
-                  value={formulario.modoActivacion}
-                  onChange={(e) => manejarCambio('modoActivacion', e.target.value)}
-                >
-                  <option value="ambos">Por Tiempo de vida y Cantidad de usos</option>
-                  <option value="tiempo">Solo por Tiempo de vida (Sin límite de usos)</option>
-                  <option value="usos">Solo por Cantidad de usos</option>
-                </select>
-              </div>
+                  {(formulario.modoActivacion === 'tiempo' ||
+                    formulario.modoActivacion === 'ambos') && (
+                    <div className="filter-group">
+                      <label htmlFor="inv-ventana">Tiempo de vida del QR</label>
+                      <select
+                        id="inv-ventana"
+                        value={formulario.ventanaSegundos}
+                        onChange={(e) => manejarCambio('ventanaSegundos', e.target.value)}
+                      >
+                        <option value="1800">30 minutos</option>
+                        <option value="3600">1 hora (Por defecto)</option>
+                        <option value="7200">2 horas</option>
+                        <option value="14400">4 horas</option>
+                        <option value="28800">8 horas (Jornada completa)</option>
+                        <option value="86400">24 horas (1 día)</option>
+                      </select>
+                    </div>
+                  )}
 
-              {(formulario.modoActivacion === 'tiempo' ||
-                formulario.modoActivacion === 'ambos') && (
-                <div className="filter-group">
-                  <label htmlFor="inv-ventana">Tiempo de vida del QR</label>
-                  <select
-                    id="inv-ventana"
-                    value={formulario.ventanaSegundos}
-                    onChange={(e) => manejarCambio('ventanaSegundos', e.target.value)}
-                  >
-                    <option value="1800">30 minutos</option>
-                    <option value="3600">1 hora (Por defecto)</option>
-                    <option value="7200">2 horas</option>
-                    <option value="14400">4 horas</option>
-                    <option value="28800">8 horas (Jornada completa)</option>
-                    <option value="86400">24 horas (1 día)</option>
-                  </select>
-                </div>
-              )}
-
-              {(formulario.modoActivacion === 'usos' ||
-                formulario.modoActivacion === 'ambos') && (
-                <div className="filter-group">
-                  <label htmlFor="inv-usos">Cantidad de usos permitidos</label>
-                  <input
-                    id="inv-usos"
-                    type="number"
-                    min="1"
-                    max="50"
-                    value={formulario.maxUsos}
-                    onChange={(e) => manejarCambio('maxUsos', e.target.value)}
-                    placeholder="Ej. 2 (1 entrada + 1 salida)"
-                    required
-                  />
-                  <small style={{ color: '#718096', fontSize: '0.78rem', marginTop: '0.2rem' }}>
-                    Ej: 1 uso (solo entrada), 2 usos (1 entrada + 1 salida), 4 usos, etc.
-                  </small>
-                </div>
+                  {(formulario.modoActivacion === 'usos' ||
+                    formulario.modoActivacion === 'ambos') && (
+                    <div className="filter-group">
+                      <label htmlFor="inv-usos">Cantidad de usos permitidos</label>
+                      <input
+                        id="inv-usos"
+                        type="number"
+                        min="1"
+                        max="50"
+                        value={formulario.maxUsos}
+                        onChange={(e) => manejarCambio('maxUsos', e.target.value)}
+                        placeholder="Ej. 2 (1 entrada + 1 salida)"
+                        required
+                      />
+                      <small style={{ color: '#718096', fontSize: '0.78rem', marginTop: '0.2rem' }}>
+                        Ej: 1 uso (solo entrada), 2 usos (1 entrada + 1 salida), 4 usos, etc.
+                      </small>
+                    </div>
+                  )}
+                </>
               )}
 
               <div className="invitacion-actions invitacion-full">

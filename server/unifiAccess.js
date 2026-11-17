@@ -9,7 +9,13 @@ const obtenerConfiguracionUnifi = () => {
   const verifySsl =
     String(process.env.UNIFI_VERIFY_SSL || 'false').toLowerCase() === 'true';
   const puertaDefecto = (
-    process.env.UNIFI_PUERTA_DEFECTO || 'e38b8776-8756-4817-8569-6ef2aafb69c7'
+    process.env.UNIFI_PUERTA_DEFECTO || 'ea3c1477-dd1c-4575-8b24-c916b46d0a90'
+  ).trim();
+  const puertaPrincipalId = (
+    process.env.UNIFI_PUERTA_PRINCIPAL_ID || 'ea3c1477-dd1c-4575-8b24-c916b46d0a90'
+  ).trim();
+  const puertaPrincipalNombre = (
+    process.env.UNIFI_PUERTA_PRINCIPAL_NOMBRE || 'Puerta Ppal LIRA'
   ).trim();
   const ventanaSegundos = Number(process.env.UNIFI_VENTANA_SEGUNDOS) || 3600;
   const maxAccesos = Number(process.env.UNIFI_MAX_ACCESOS) || 2;
@@ -20,6 +26,8 @@ const obtenerConfiguracionUnifi = () => {
     token,
     verifySsl,
     puertaDefecto,
+    puertaPrincipalId,
+    puertaPrincipalNombre,
     ventanaSegundos,
     maxAccesos,
     pollIntervalMs,
@@ -386,9 +394,20 @@ const eliminarVisitanteUnifi = async (visitorId, isForce = true) => {
 };
 
 /**
- * 2) LISTAR PUERTAS disponibles en la consola UniFi Access.
+ * 2) LISTAR PUERTAS asignables en la consola UniFi Access.
+ * Prioriza /door_groups/topology (que devuelve únicamente puertas reales asignables a QR como
+ * Puerta Ppal LIRA, Gestión Humana, Puerta Vehicular, Datacenter) y usa /doors como respaldo.
  */
 const listarPuertasUnifi = async () => {
+  try {
+    const puertasTopologia = await idsTodasLasPuertasUnifi();
+    if (Array.isArray(puertasTopologia) && puertasTopologia.length > 0) {
+      return puertasTopologia;
+    }
+  } catch {
+    // Continuar a /doors como respaldo
+  }
+
   const datos = await peticionUnifi('GET', EP_DOORS);
   let puertas = datos && typeof datos === 'object' && 'data' in datos ? datos.data : datos;
 
@@ -541,17 +560,82 @@ const esAccesoConcedidoUnifi = (evento, visitorId) => {
 };
 
 /**
- * Extrae el nombre de la puerta de un evento de apertura de UniFi.
+ * Extrae el ID y el nombre de la puerta de un evento de apertura de UniFi.
  */
-const obtenerPuertaDeEventoUnifi = (evento) => {
+const obtenerInfoPuertaDeEventoUnifi = (evento) => {
   const src = (evento && (evento._source || evento)) || {};
   const objetivos = Array.isArray(src.target) ? src.target : [];
   for (const objetivo of objetivos) {
     if (objetivo && objetivo.type === 'door') {
-      return objetivo.display_name || objetivo.id || 'Puerta';
+      return {
+        id: String(objetivo.id || '').trim(),
+        nombre: String(objetivo.display_name || objetivo.name || objetivo.id || 'Puerta').trim(),
+      };
     }
   }
-  return 'Puerta';
+  return { id: '', nombre: 'Puerta' };
+};
+
+/**
+ * Extrae el nombre de la puerta de un evento de apertura de UniFi.
+ */
+const obtenerPuertaDeEventoUnifi = (evento) => {
+  return obtenerInfoPuertaDeEventoUnifi(evento).nombre;
+};
+
+/**
+ * Determina si el evento de apertura ocurrió en la Puerta Principal del edificio
+ * (En UniFi Access de Lira Seguridad: "Puerta Ppal LIRA", ID: ea3c1477-dd1c-4575-8b24-c916b46d0a90).
+ */
+const esPuertaPrincipalUnifi = (evento) => {
+  const { puertaPrincipalId, puertaPrincipalNombre } = obtenerConfiguracionUnifi();
+  const infoPuerta = obtenerInfoPuertaDeEventoUnifi(evento);
+
+  if (puertaPrincipalId && infoPuerta.id) {
+    if (infoPuerta.id.toLowerCase() === puertaPrincipalId.toLowerCase()) {
+      return true;
+    }
+    return false;
+  }
+
+  const nombreLower = (infoPuerta.nombre || '').toLowerCase();
+  if (puertaPrincipalNombre) {
+    if (nombreLower.includes(puertaPrincipalNombre.toLowerCase())) {
+      return true;
+    }
+  }
+
+  return nombreLower.includes('ppal') || nombreLower.includes('principal');
+};
+
+/**
+ * Extrae el método de paso ('entry' o 'exit') que reporta el lector UniFi en target (id: 'door_entry_method')
+ * y la hora exacta del evento en formato HH:MM:SS.
+ */
+const obtenerDireccionYHoraEventoUnifi = (evento) => {
+  const src = (evento && (evento._source || evento)) || {};
+  const objetivos = Array.isArray(src.target) ? src.target : [];
+  let direccion = '';
+
+  for (const objetivo of objetivos) {
+    if (
+      objetivo &&
+      (objetivo.id === 'door_entry_method' || objetivo.type === 'device_config') &&
+      objetivo.display_name
+    ) {
+      const val = String(objetivo.display_name).toLowerCase().trim();
+      if (val === 'entry' || val === 'exit') {
+        direccion = val;
+        break;
+      }
+    }
+  }
+
+  const tsMs = Number(src.event?.published) || Date.parse(evento?.['@timestamp'] || '');
+  const fechaEvento = Number.isFinite(tsMs) && tsMs > 0 ? new Date(tsMs) : new Date();
+  const hora = fechaEvento.toTimeString().slice(0, 8);
+
+  return { direccion, hora, timestampMs: fechaEvento.getTime() };
 };
 
 /**
@@ -751,6 +835,9 @@ module.exports = {
   obtenerLogsPuertasGeneralesUnifi,
   buscarUsuariosUnifi,
   esAccesoConcedidoUnifi,
+  obtenerInfoPuertaDeEventoUnifi,
   obtenerPuertaDeEventoUnifi,
+  esPuertaPrincipalUnifi,
+  obtenerDireccionYHoraEventoUnifi,
   enviarQrPorCorreo,
 };
