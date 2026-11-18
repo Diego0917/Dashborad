@@ -425,6 +425,26 @@
   color: #004499;
 }
 
+.eye-action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+  border: 1px solid #cbd5e0;
+  background-color: #f8fafc;
+  color: #0066cc;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.eye-action-button:hover {
+  background-color: #ebf8ff;
+  border-color: #0066cc;
+  color: #004499;
+}
+
 .modal-overlay {
   position: fixed;
   inset: 0;

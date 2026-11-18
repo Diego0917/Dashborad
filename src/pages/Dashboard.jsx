@@ -632,12 +632,13 @@ const Dashboard = () => {
                       <th>Fecha</th>
                       <th>Entrada</th>
                       <th>Salida</th>
+                      <th>Ver movimiento</th>
                     </tr>
                   </thead>
                   <tbody>
                     {visitasPagina.length === 0 ? (
                       <tr>
-                        <td colSpan="9" className="empty-cell">
+                        <td colSpan="10" className="empty-cell">
                           No hay visitas para mostrar en el periodo seleccionado
                         </td>
                       </tr>
@@ -668,20 +669,9 @@ const Dashboard = () => {
                           >
                             <td>{visita.nombre_completo}</td>
                             <td>
-                              <a
-                                href={`#detalle-${visita.id_registro || visita.cedula}`}
-                                className="cedula-link"
-                                title="Haz clic para ver los movimientos y el detalle del registro"
-                                onClick={(evento) => {
-                                  evento.preventDefault();
-                                  setVisitaDetalleModal(visita);
-                                }}
-                              >
-                                {visita.rol === 'Empleado' ||
-                                String(visita.cedula || '').startsWith('UNIFI-')
-                                  ? 'Ver movimientos'
-                                  : visita.cedula}
-                              </a>
+                              {String(visita.cedula || '').startsWith('UNIFI-')
+                                ? 'N/A'
+                                : visita.cedula}
                             </td>
                             <td>{visita.eps || 'N/A'}</td>
                             <td>{visita.arl || 'N/A'}</td>
@@ -737,6 +727,30 @@ const Dashboard = () => {
                               ) : (
                                 <span className="texto-pendiente">Sin registrar</span>
                               )}
+                            </td>
+                            <td style={{ textAlign: 'center' }}>
+                              <button
+                                type="button"
+                                className="eye-action-button"
+                                title="Ver movimientos y detalle del registro"
+                                aria-label="Ver movimientos"
+                                onClick={() => setVisitaDetalleModal(visita)}
+                              >
+                                <svg
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  width="20"
+                                  height="20"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="2"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                >
+                                  <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+                                  <circle cx="12" cy="12" r="3" />
+                                </svg>
+                              </button>
                             </td>
                           </tr>
                         );

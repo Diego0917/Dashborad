@@ -19,6 +19,7 @@ services:
       retries: 20
 
   api:
+    env_file: ./server/.env
     build: ./server
     restart: unless-stopped
     environment:
@@ -33,6 +34,7 @@ services:
     depends_on:
       bd:
         condition: service_healthy
+        
 
   web:
     build:
