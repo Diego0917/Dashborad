@@ -193,6 +193,24 @@
   font-size: 0.9rem;
 }
 
+.qr-simulado-banner {
+  background-color: #fffbeb;
+  color: #92400e;
+  border: 2px solid #f59e0b;
+  border-radius: 6px;
+  padding: 0.9rem 1rem;
+  margin-bottom: 1rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.invitacion-qr-img--simulado {
+  opacity: 0.35;
+  filter: grayscale(1);
+}
+
 .table-container {
   background-color: #fff;
   border-radius: 4px;

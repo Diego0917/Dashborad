@@ -5,7 +5,7 @@ CREATE TABLE roles (
 );
 
 -- Ingreso de roles
-INSERT INTO roles (nombre_rol) VALUES ('Visitante'), ('Empleado'), ('Proveedor');
+INSERT IGNORE INTO roles (id_rol, nombre_rol) VALUES (1, 'Visitante'), (2, 'Empleado'), (3, 'Proveedor');
 
 -- Creacion tablas personas
 CREATE TABLE personas (
@@ -37,10 +37,6 @@ CREATE TABLE registros_ingreso (
     CONSTRAINT fk_registro_persona FOREIGN KEY (cedula) REFERENCES personas(cedula)
 );
 
--- Sentencias opcionales si las tablas ya fueron creadas previamente:
--- CREATE INDEX idx_personas_nombre ON personas (nombre_completo);
--- CREATE INDEX idx_registros_fecha_hora ON registros_ingreso (fecha_ingreso, hora_ingreso);
-
 -- Creacion tabla usuarios (acceso al Dashboard con autenticacion JWT)
 CREATE TABLE IF NOT EXISTS usuarios (
     id_usuario INT AUTO_INCREMENT PRIMARY KEY,
@@ -69,3 +65,17 @@ CREATE TABLE IF NOT EXISTS accesos_qr (
     INDEX idx_accesos_qr_visitor (unifi_visitor_id),
     CONSTRAINT fk_qr_registro FOREIGN KEY (id_registro) REFERENCES registros_ingreso(id_registro) ON DELETE CASCADE
 );
+
+-- Tabla auxiliar para evitar duplicar eventos de entrada/salida por rostro de empleados en /system/logs
+CREATE TABLE IF NOT EXISTS eventos_empleados_unifi (
+    id_evento VARCHAR(128) PRIMARY KEY,
+    unifi_user_id VARCHAR(64) NOT NULL,
+    fecha_creacion TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Registro de migraciones aplicadas para no ejecutar ALTER TABLE en cada arranque
+CREATE TABLE IF NOT EXISTS migraciones_schema (
+    id VARCHAR(64) PRIMARY KEY,
+    ejecutada_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+

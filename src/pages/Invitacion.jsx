@@ -39,6 +39,10 @@ const Invitacion = () => {
   const [correoReenvio, setCorreoReenvio] = useState('');
   const [enviandoCorreo, setEnviandoCorreo] = useState(false);
 
+  const esQrSimulado =
+    Boolean(qrGenerado?.simulado) ||
+    String(qrGenerado?.unifi_visitor_id || '').startsWith('sim-');
+
   const manejarCambio = (campo, valor) => {
     setFormulario((prev) => ({ ...prev, [campo]: valor }));
     if (campo === 'cedula') {
@@ -103,8 +107,13 @@ const Invitacion = () => {
       setQrGenerado(resultado);
       setCorreoReenvio(formulario.correo.trim() || '');
 
-      let textoExito =
-        'Ingreso registrado en la base de datos y código QR generado exitosamente.';
+      const resultadoSimulado =
+        Boolean(resultado.simulado) ||
+        String(resultado.unifi_visitor_id || '').startsWith('sim-');
+
+      let textoExito = resultadoSimulado
+        ? 'Ingreso registrado, pero UniFi Access no respondió: se generó un QR DE PRUEBA que NO abre ninguna puerta.'
+        : 'Ingreso registrado en la base de datos y código QR generado exitosamente.';
       if (resultado.correo?.enviado) {
         textoExito += ` ${resultado.correo.mensaje}.`;
       } else if (resultado.correo?.mensaje) {
@@ -372,12 +381,20 @@ const Invitacion = () => {
               </p>
             ) : (
               <div className="invitacion-qr-box">
+                {esQrSimulado && (
+                  <div className="qr-simulado-banner" role="alert">
+                    ⚠️ QR DE PRUEBA — NO ABRE NINGUNA PUERTA. La consola UniFi Access no
+                    respondió y el servidor está en modo de prueba (UNIFI_MODO_PRUEBA). No
+                    entregues este código al visitante.
+                  </div>
+                )}
+
                 {qrGenerado.qr_base64 && (
                   <div className="invitacion-qr-img-container">
                     <img
                       src={qrGenerado.qr_base64}
                       alt={`Código QR de ${qrGenerado.nombre_completo}`}
-                      className="invitacion-qr-img"
+                      className={`invitacion-qr-img${esQrSimulado ? ' invitacion-qr-img--simulado' : ''}`}
                     />
                   </div>
                 )}
@@ -386,7 +403,7 @@ const Invitacion = () => {
                   <div className="modal-detail-item">
                     <span className="modal-detail-label">Estado de conexión con UniFi Access</span>
                     <p className="modal-detail-value">
-                      {String(qrGenerado.unifi_visitor_id || '').startsWith('sim-')
+                      {esQrSimulado
                         ? '⚠️ Modo de prueba local (Sin conexión a 192.168.40.178:12445 — este QR no abrirá la puerta física hasta conectar a la red .40.x)'
                         : `✅ QR Oficial de UniFi Access (ID: ${qrGenerado.unifi_visitor_id}) — Listo para lector G3 Reader Pro`}
                     </p>
@@ -434,24 +451,26 @@ const Invitacion = () => {
                   </div>
                 </div>
 
-                <div className="invitacion-email-row">
-                  <input
-                    type="email"
-                    placeholder="Correo electrónico para enviar el QR..."
-                    value={correoReenvio}
-                    onChange={(e) => setCorreoReenvio(e.target.value)}
-                  />
-                  <button
-                    type="button"
-                    className="apply-filters-button"
-                    onClick={manejarEnviarPorCorreo}
-                    disabled={enviandoCorreo || !correoReenvio.trim()}
-                  >
-                    {enviandoCorreo ? 'Enviando...' : 'Enviar al Correo'}
-                  </button>
-                </div>
+                {!esQrSimulado && (
+                  <div className="invitacion-email-row">
+                    <input
+                      type="email"
+                      placeholder="Correo electrónico para enviar el QR..."
+                      value={correoReenvio}
+                      onChange={(e) => setCorreoReenvio(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="apply-filters-button"
+                      onClick={manejarEnviarPorCorreo}
+                      disabled={enviandoCorreo || !correoReenvio.trim()}
+                    >
+                      {enviandoCorreo ? 'Enviando...' : 'Enviar al Correo'}
+                    </button>
+                  </div>
+                )}
 
-                {qrGenerado.qr_base64 && (
+                {qrGenerado.qr_base64 && !esQrSimulado && (
                   <a
                     href={qrGenerado.qr_base64}
                     download={`qr_ingreso_${qrGenerado.cedula}.png`}

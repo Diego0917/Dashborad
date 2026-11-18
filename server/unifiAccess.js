@@ -34,6 +34,21 @@ const obtenerConfiguracionUnifi = () => {
   };
 };
 
+/**
+ * Indica si se permite emitir credenciales QR simuladas cuando la consola UniFi no responde.
+ * Requiere activación explícita (UNIFI_MODO_PRUEBA=true) y SOLO funciona fuera de producción:
+ * con NODE_ENV=production la simulación queda bloqueada aunque la variable esté activa.
+ */
+const modoPruebaUnifiSolicitado = () =>
+  String(process.env.UNIFI_MODO_PRUEBA || 'false').trim().toLowerCase() === 'true';
+
+const esEntornoProduccion = () =>
+  String(process.env.NODE_ENV || '').trim().toLowerCase() === 'production';
+
+const modoPruebaUnifiActivo = () => modoPruebaUnifiSolicitado() && !esEntornoProduccion();
+
+const esVisitanteSimulado = (visitorId) => String(visitorId || '').startsWith('sim-');
+
 // Endpoints equivalentes a access.py + usuarios permanentes (empleados con rostro)
 const EP_VISITORS = '/visitors';
 const EP_USERS = '/users';
@@ -295,8 +310,9 @@ const generarPngQrSimulado = (semillaTexto) => {
 
 /**
  * 1) CREAR VISITANTE en UniFi Access con puertas asignadas y ventana de vigencia.
- * Si la consola UniFi no es alcanzable en la red actual y UNIFI_MODO_ESTRICTO !== 'true',
- * crea un visitante en modo respaldo local para permitir pruebas completas en el Dashboard.
+ * Por defecto (modo estricto), si UniFi falla se lanza un error con codigoHttp=503 y no se emite QR.
+ * Solo si UNIFI_MODO_PRUEBA=true y NODE_ENV !== 'production' se crea un visitante simulado (sim-…)
+ * cuyo QR NO abre ninguna puerta, para pruebas locales del Dashboard.
  */
 const crearVisitanteUnifi = async ({
   nombres,
@@ -362,15 +378,21 @@ const crearVisitanteUnifi = async ({
       visitanteRaw: visitante,
     };
   } catch (errorConexion) {
-    const modoEstricto =
-      String(process.env.UNIFI_MODO_ESTRICTO || 'false').toLowerCase() === 'true';
-    if (modoEstricto) {
-      throw errorConexion;
+    // Modo estricto por defecto: sin respuesta válida de UniFi no se emite ningún QR.
+    if (!modoPruebaUnifiActivo()) {
+      const errorUnifi = new Error(
+        `No se pudo crear el acceso en UniFi Access (${config.baseUrl}). ` +
+          `No se generó ningún código QR. Detalle: ${errorConexion.message}`
+      );
+      errorUnifi.codigoHttp = 503;
+      errorUnifi.cause = errorConexion;
+      throw errorUnifi;
     }
 
     const idSimulado = `sim-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
     console.warn(
-      `[UniFi Respaldo Local] Consola UniFi (${config.baseUrl}) no alcanzable desde esta red. Creando credencial de prueba ${idSimulado}.`
+      `[UniFi MODO PRUEBA] Consola UniFi (${config.baseUrl}) no respondió (${errorConexion.message}). ` +
+        `Creando credencial FALSA ${idSimulado}: este QR NO abre ninguna puerta.`
     );
 
     return {
@@ -609,6 +631,43 @@ const esPuertaPrincipalUnifi = (evento) => {
 };
 
 /**
+ * Extrae el timestamp en milisegundos de un evento de UniFi Access.
+ * Prioriza `@timestamp` (en la raíz o dentro de `_source`) y usa `event.published` como respaldo.
+ */
+const obtenerTimestampMsEventoUnifi = (evento) => {
+  if (!evento || typeof evento !== 'object') return 0;
+  const src = evento._source || evento;
+
+  const tsIso = Date.parse(evento['@timestamp'] || src['@timestamp'] || '');
+  if (Number.isFinite(tsIso) && tsIso > 0) return tsIso;
+
+  const publicado = Number(src.event?.published);
+  if (Number.isFinite(publicado) && publicado > 0) {
+    return publicado < 1e12 ? publicado * 1000 : publicado;
+  }
+
+  return 0;
+};
+
+/**
+ * Ordena los eventos de UniFi Access cronológicamente (del más antiguo al más reciente)
+ * usando `@timestamp` / `event.published`, con desempate por `_id` numérico si existe.
+ */
+const ordenarEventosUnifiCronologicamente = (eventos) => {
+  if (!Array.isArray(eventos)) return [];
+  return [...eventos].sort((a, b) => {
+    const diff = obtenerTimestampMsEventoUnifi(a) - obtenerTimestampMsEventoUnifi(b);
+    if (diff !== 0) return diff;
+    const idA = Number(a?._id);
+    const idB = Number(b?._id);
+    if (Number.isFinite(idA) && Number.isFinite(idB) && idA !== idB) {
+      return idA - idB;
+    }
+    return 0;
+  });
+};
+
+/**
  * Extrae el método de paso ('entry' o 'exit') que reporta el lector UniFi en target (id: 'door_entry_method')
  * y la hora exacta del evento en formato HH:MM:SS.
  */
@@ -631,8 +690,8 @@ const obtenerDireccionYHoraEventoUnifi = (evento) => {
     }
   }
 
-  const tsMs = Number(src.event?.published) || Date.parse(evento?.['@timestamp'] || '');
-  const fechaEvento = Number.isFinite(tsMs) && tsMs > 0 ? new Date(tsMs) : new Date();
+  const tsMs = obtenerTimestampMsEventoUnifi(evento);
+  const fechaEvento = tsMs > 0 ? new Date(tsMs) : new Date();
   const hora = fechaEvento.toTimeString().slice(0, 8);
 
   return { direccion, hora, timestampMs: fechaEvento.getTime() };
@@ -824,6 +883,10 @@ const enviarQrPorCorreo = async ({
 
 module.exports = {
   obtenerConfiguracionUnifi,
+  modoPruebaUnifiSolicitado,
+  modoPruebaUnifiActivo,
+  esEntornoProduccion,
+  esVisitanteSimulado,
   dividirNombreCompleto,
   anadirQuietZonePng,
   crearVisitanteUnifi,
@@ -838,6 +901,8 @@ module.exports = {
   obtenerInfoPuertaDeEventoUnifi,
   obtenerPuertaDeEventoUnifi,
   esPuertaPrincipalUnifi,
+  obtenerTimestampMsEventoUnifi,
+  ordenarEventosUnifiCronologicamente,
   obtenerDireccionYHoraEventoUnifi,
   enviarQrPorCorreo,
 };

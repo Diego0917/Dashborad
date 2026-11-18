@@ -3,10 +3,10 @@ services:
     image: mysql:8.4
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${CONTRASENA_ROOT_BD:-root_lira_2026}
+      MYSQL_ROOT_PASSWORD: ${CONTRASENA_ROOT_BD:?Falta CONTRASENA_ROOT_BD en .env}
       MYSQL_DATABASE: ${NOMBRE_BD:-ingreso_lira}
       MYSQL_USER: ${USUARIO_BD:-lira_app}
-      MYSQL_PASSWORD: ${CONTRASENA_BD:-lira_pass_2026}
+      MYSQL_PASSWORD: ${CONTRASENA_BD:?Falta CONTRASENA_BD en .env}
       TZ: America/Bogota            # CURRENT_DATE / CURRENT_TIME en hora de Colombia
     volumes:
       - datos_mysql:/var/lib/mysql
@@ -27,7 +27,7 @@ services:
       HOST_BD: bd
       PUERTO_BD: 3306
       USUARIO_BD: ${USUARIO_BD:-lira_app}
-      CONTRASENA_BD: ${CONTRASENA_BD:-lira_pass_2026}
+      CONTRASENA_BD: ${CONTRASENA_BD:?Falta CONTRASENA_BD en .env}
       NOMBRE_BD: ${NOMBRE_BD:-ingreso_lira}
       ORIGENES_CORS: ${ORIGENES_CORS:-http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173}
       TZ: America/Bogota
