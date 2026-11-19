@@ -116,7 +116,51 @@ const ejecutarMigracionesPendientes = async (pool) => {
   }
 };
 
+const esperar = (ms) => new Promise((resolver) => setTimeout(resolver, ms));
+
+/**
+ * Conecta a la base de datos, aplica las migraciones pendientes y ejecuta `pasoAdicional`
+ * (p. ej. crear el usuario admin inicial), reintentando cuando MySQL aún no está listo.
+ * Si se agotan los intentos, lanza un Error para que el proceso se detenga con código != 0.
+ */
+const inicializarBaseDatosConReintentos = async (
+  pool,
+  {
+    maxIntentos = Math.max(Number(process.env.BD_MAX_REINTENTOS) || 10, 1),
+    esperaMs = Math.max(Number(process.env.BD_REINTENTO_MS) || 3000, 50),
+    pasoAdicional = null,
+  } = {}
+) => {
+  let ultimoError;
+
+  for (let intento = 1; intento <= maxIntentos; intento += 1) {
+    try {
+      const conexion = await pool.getConnection();
+      conexion.release();
+      console.log('¡Conectado exitosamente al pool de la base de datos MySQL!');
+      await ejecutarMigracionesPendientes(pool);
+      if (typeof pasoAdicional === 'function') {
+        await pasoAdicional();
+      }
+      return;
+    } catch (error) {
+      ultimoError = error;
+      if (intento < maxIntentos) {
+        console.warn(
+          `[BD] Intento ${intento}/${maxIntentos} falló (${error.message}). Reintentando en ${esperaMs} ms...`
+        );
+        await esperar(esperaMs);
+      }
+    }
+  }
+
+  throw new Error(
+    `No se pudo inicializar la base de datos tras ${maxIntentos} intentos: ${ultimoError?.message || 'Error desconocido'}`
+  );
+};
+
 module.exports = {
   ejecutarMigracionesPendientes,
+  inicializarBaseDatosConReintentos,
   MIGRACIONES,
 };

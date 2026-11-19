@@ -7,11 +7,13 @@ import {
 } from '../api/unifiApi';
 import './Dashboard.css';
 
-const PUERTA_PPAL_LIRA = 'ea3c1477-dd1c-4575-8b24-c916b46d0a90';
-const PUERTA_GESTION_HUMANA = 'e38b8776-8756-4817-8569-6ef2aafb69c7';
+// Puertas opcionales desde variable de entorno del frontend; si no se define, el backend usa UNIFI_PUERTAS_VISITANTE
+const PUERTAS_DEFECTO_VISITANTE = String(import.meta.env.VITE_UNIFI_PUERTAS_VISITANTE || '')
+  .split(',')
+  .map((id) => id.trim())
+  .filter(Boolean);
 
-// Puertas asignadas automáticamente por defecto a cada visitante (Puerta Ppal LIRA + Gestión Humana)
-const PUERTAS_DEFECTO_VISITANTE = [PUERTA_PPAL_LIRA, PUERTA_GESTION_HUMANA];
+const ACCESOS_PREDETERMINADOS_QR = 6;
 
 const FORMULARIO_INICIAL = {
   cedula: '',
@@ -22,9 +24,7 @@ const FORMULARIO_INICIAL = {
   arl: '',
   correo: '',
   motivo: '',
-  modoActivacion: 'ambos',
   ventanaSegundos: '3600',
-  maxUsos: '2',
 };
 
 const Invitacion = () => {
@@ -88,7 +88,6 @@ const Invitacion = () => {
 
     setEnviando(true);
     try {
-      const esSoloTiempo = formulario.modoActivacion === 'tiempo';
       const resultado = await registrarIngresoConQr({
         cedula: formulario.cedula.trim(),
         nombre_completo: formulario.nombre_completo.trim(),
@@ -99,9 +98,9 @@ const Invitacion = () => {
         correo: formulario.correo.trim() || '',
         motivo: formulario.motivo.trim() || 'Visita autorizada',
         puertas: PUERTAS_DEFECTO_VISITANTE,
-        modoActivacion: formulario.modoActivacion,
+        modoActivacion: 'ambos',
         ventanaSegundos: Number(formulario.ventanaSegundos) || 3600,
-        maxUsos: esSoloTiempo ? 0 : Math.max(1, Number(formulario.maxUsos) || 2),
+        maxUsos: ACCESOS_PREDETERMINADOS_QR,
       });
 
       setQrGenerado(resultado);
@@ -290,59 +289,21 @@ const Invitacion = () => {
               </div>
 
               {formulario.id_rol !== '2' && (
-                <>
-                  <div className="filter-group">
-                    <label htmlFor="inv-modo">Modo de activación del QR *</label>
-                    <select
-                      id="inv-modo"
-                      value={formulario.modoActivacion}
-                      onChange={(e) => manejarCambio('modoActivacion', e.target.value)}
-                    >
-                      <option value="ambos">Por Tiempo de vida y Cantidad de usos</option>
-                      <option value="tiempo">Solo por Tiempo de vida (Sin límite de usos)</option>
-                      <option value="usos">Solo por Cantidad de usos</option>
-                    </select>
-                  </div>
-
-                  {(formulario.modoActivacion === 'tiempo' ||
-                    formulario.modoActivacion === 'ambos') && (
-                    <div className="filter-group">
-                      <label htmlFor="inv-ventana">Tiempo de vida del QR</label>
-                      <select
-                        id="inv-ventana"
-                        value={formulario.ventanaSegundos}
-                        onChange={(e) => manejarCambio('ventanaSegundos', e.target.value)}
-                      >
-                        <option value="1800">30 minutos</option>
-                        <option value="3600">1 hora (Por defecto)</option>
-                        <option value="7200">2 horas</option>
-                        <option value="14400">4 horas</option>
-                        <option value="28800">8 horas (Jornada completa)</option>
-                        <option value="86400">24 horas (1 día)</option>
-                      </select>
-                    </div>
-                  )}
-
-                  {(formulario.modoActivacion === 'usos' ||
-                    formulario.modoActivacion === 'ambos') && (
-                    <div className="filter-group">
-                      <label htmlFor="inv-usos">Cantidad de usos permitidos</label>
-                      <input
-                        id="inv-usos"
-                        type="number"
-                        min="1"
-                        max="50"
-                        value={formulario.maxUsos}
-                        onChange={(e) => manejarCambio('maxUsos', e.target.value)}
-                        placeholder="Ej. 2 (1 entrada + 1 salida)"
-                        required
-                      />
-                      <small style={{ color: '#718096', fontSize: '0.78rem', marginTop: '0.2rem' }}>
-                        Ej: 1 uso (solo entrada), 2 usos (1 entrada + 1 salida), 4 usos, etc.
-                      </small>
-                    </div>
-                  )}
-                </>
+                <div className="filter-group">
+                  <label htmlFor="inv-ventana">Tiempo de vida del QR</label>
+                  <select
+                    id="inv-ventana"
+                    value={formulario.ventanaSegundos}
+                    onChange={(e) => manejarCambio('ventanaSegundos', e.target.value)}
+                  >
+                    <option value="1800">30 minutos</option>
+                    <option value="3600">1 hora (Por defecto)</option>
+                    <option value="7200">2 horas</option>
+                    <option value="14400">4 horas</option>
+                    <option value="28800">8 horas (Jornada completa)</option>
+                    <option value="86400">24 horas (1 día)</option>
+                  </select>
+                </div>
               )}
 
               <div className="invitacion-actions invitacion-full">

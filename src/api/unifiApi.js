@@ -14,11 +14,6 @@ export const CLAVE_STORAGE_USUARIO = 'lira_usuario';
 export const EVENTO_SESION_EXPIRADA = 'lira:sesion-expirada';
 
 api.interceptors.request.use((configuracion) => {
-  const claveApi = import.meta.env.VITE_UNIFI_API_KEY;
-  if (claveApi) {
-    configuracion.headers['X-API-KEY'] = claveApi;
-  }
-
   const tokenJwt = localStorage.getItem(CLAVE_STORAGE_TOKEN);
   if (tokenJwt) {
     configuracion.headers.Authorization = `Bearer ${tokenJwt}`;

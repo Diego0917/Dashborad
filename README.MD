@@ -1,24 +1,99 @@
- ## Proyecto para la empresa LIRA SEGURIDAD
+# Dashboard de Control de Ingresos
 
--- El proyecto se está realizando para poder llevar el registro de empleados, visitantes y proveedores, ya que por medio del registro de una bitácora física se presentan inconsistencias en los registros y la precisión de la cantidad de personas que se encuentran dentro del edificio.
+Sistema web para el registro y monitoreo en tiempo real de ingresos y salidas de **empleados, visitantes y proveedores**, integrado con **UniFi Access** (reconocimiento facial y emisión de códigos QR temporales).
 
 ## Herramientas
 
--- Backend: Node.js (JavaScript) para la gestión de APIs y lógica de negocio.
+- **Frontend:** React + Vite (`src/`), servido por Nginx en producción.
+- **Backend:** Node.js + Express (`server/`).
+- **Base de datos:** MySQL 8.4 (`Db/schema.sql`).
 
--- Frontend: React para la construcción de una interfaz visual dinámica e interactiva.
+---
 
--- Base de Datos: SQL para el almacenamiento estructurado y relacional de los datos.
+## 1. Configuración de variables de entorno
 
-## Proyecciones
+El proyecto utiliza dos archivos `.env` (excluidos de Git):
 
--- Sincronizar el sistema con la API de UNIFI para manejar la carga de datos en tiempo real.
+1. **`.env` (en la raíz):** variables para `docker-compose.yml` (credenciales de MySQL y puerto web).
+2. **`server/.env`:** variables para el servidor backend (conexión a BD, seguridad JWT, UniFi Access y SMTP).
 
--- Concretar e implementar el flujo de acceso mediante códigos QR para agilizar la lectura de datos.
+Copia las plantillas antes de iniciar:
 
--- Desarrollar un apartado obligatorio de razón social para la validación de proveedores; en caso de que no cuenten con una registrada, no se les autorización el ingreso.
+```bash
+cp .env.example .env
+cp server/.env.example server/.env
+```
 
-## Scrips de arranque
+### Variables en `.env` (raíz — Docker)
 
---Servidor: npm --prefix server run dev
---Frontend: npm run dev
+| Variable | Descripción |
+|---|---|
+| `CONTRASENA_ROOT_BD` | Contraseña del usuario `root` de MySQL (obligatoria en Docker). |
+| `USUARIO_BD` | Usuario de aplicación para MySQL. |
+| `CONTRASENA_BD` | Contraseña del usuario de aplicación en MySQL (obligatoria en Docker). |
+| `NOMBRE_BD` | Nombre de la base de datos. |
+| `PUERTO_WEB` | Puerto HTTP local para la aplicación web. |
+| `ORIGENES_CORS` | Orígenes permitidos por CORS (separados por coma). |
+
+### Variables en `server/.env` (Backend)
+
+#### Seguridad y base de datos
+
+| Variable | Descripción |
+|---|---|
+| `JWT_SECRET` | Clave secreta para firmar tokens JWT (obligatoria en producción). |
+| `CONTRASENA_ADMIN_INICIAL` | Contraseña para crear el usuario administrador inicial cuando la tabla `usuarios` está vacía (obligatoria en producción). |
+| `USUARIO_ADMIN_INICIAL` | Nombre de usuario del administrador inicial. |
+| `HOST_BD`, `PUERTO_BD`, `USUARIO_BD`, `CONTRASENA_BD`, `NOMBRE_BD` | Datos de conexión a MySQL. |
+
+#### UniFi Access
+
+| Variable | Descripción |
+|---|---|
+| `UNIFI_HOST` | Dirección IP o hostname de la consola UniFi Access. |
+| `UNIFI_PORT` | Puerto de la API de UniFi Access. |
+| `UNIFI_TOKEN` | Token de API generado en la consola UniFi Access. |
+| `UNIFI_VERIFY_SSL` | Verificación de certificado SSL (`true` o `false`). |
+| `UNIFI_PUERTA_PRINCIPAL_ID` | ID de la puerta principal en UniFi Access. |
+| `UNIFI_PUERTA_PRINCIPAL_NOMBRE` | Nombre de la puerta principal. |
+| `UNIFI_PUERTA_DEFECTO` | ID de la puerta por defecto. |
+| `UNIFI_PUERTAS_VISITANTE` | IDs de las puertas asignadas a las invitaciones QR (separados por coma). |
+| `UNIFI_VENTANA_SEGUNDOS` | Tiempo de vigencia por defecto del código QR en segundos. |
+| `UNIFI_MAX_ACCESOS` | Cantidad máxima de accesos permitidos por defecto para el QR. |
+| `UNIFI_POLL_INTERVAL_MS` | Intervalo de consulta de eventos en milisegundos. |
+| `UNIFI_TIMEOUT_MS` | Tiempo máximo de espera por petición a UniFi en milisegundos. |
+| `UNIFI_QR_COOLDOWN_SEGUNDOS` | Tiempo mínimo en segundos (antirrebote) entre dos lecturas del mismo QR para no descontar dos usos por un doble escaneo. |
+| `UNIFI_MODO_PRUEBA` | Por defecto `false` (modo estricto: si UniFi no responde, devuelve error y no emite QR). Si es `true` en entorno de desarrollo, genera un QR simulado de prueba con aviso en pantalla y sin envío por correo. |
+
+#### Correo electrónico (SMTP)
+
+| Variable | Descripción |
+|---|---|
+| `SMTP_HOST` | Servidor SMTP. |
+| `SMTP_PORT` | Puerto SMTP. |
+| `SMTP_USER` | Usuario de la cuenta SMTP. |
+| `SMTP_PASS` | Contraseña o clave de aplicación SMTP. |
+| `SMTP_FROM` | Remitente de los correos enviados. |
+
+---
+
+## 2. Ejecución con Docker Compose
+
+```bash
+docker compose up -d --build
+```
+
+---
+
+## 3. Ejecución en desarrollo local
+
+```bash
+npm install
+npm --prefix server install
+
+# Servidor backend
+npm --prefix server run dev
+
+# Frontend
+npm run dev
+```

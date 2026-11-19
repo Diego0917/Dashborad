@@ -8,18 +8,28 @@ const obtenerConfiguracionUnifi = () => {
   const token = (process.env.UNIFI_TOKEN || '').trim();
   const verifySsl =
     String(process.env.UNIFI_VERIFY_SSL || 'false').toLowerCase() === 'true';
-  const puertaDefecto = (
-    process.env.UNIFI_PUERTA_DEFECTO || 'ea3c1477-dd1c-4575-8b24-c916b46d0a90'
-  ).trim();
-  const puertaPrincipalId = (
-    process.env.UNIFI_PUERTA_PRINCIPAL_ID || 'ea3c1477-dd1c-4575-8b24-c916b46d0a90'
-  ).trim();
+  const puertaDefecto = (process.env.UNIFI_PUERTA_DEFECTO || '').trim();
+  const puertaPrincipalId = (process.env.UNIFI_PUERTA_PRINCIPAL_ID || '').trim();
   const puertaPrincipalNombre = (
     process.env.UNIFI_PUERTA_PRINCIPAL_NOMBRE || 'Puerta Ppal LIRA'
   ).trim();
+  const puertasVisitanteEnv = String(process.env.UNIFI_PUERTAS_VISITANTE || '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean);
+  const puertasVisitante =
+    puertasVisitanteEnv.length > 0
+      ? Array.from(new Set(puertasVisitanteEnv))
+      : Array.from(new Set([puertaPrincipalId, puertaDefecto].filter(Boolean)));
   const ventanaSegundos = Number(process.env.UNIFI_VENTANA_SEGUNDOS) || 3600;
-  const maxAccesos = Number(process.env.UNIFI_MAX_ACCESOS) || 2;
+  const maxAccesos = Number(process.env.UNIFI_MAX_ACCESOS) || 6;
   const pollIntervalMs = Number(process.env.UNIFI_POLL_INTERVAL_MS) || 5000;
+  const timeoutMs = Math.max(Number(process.env.UNIFI_TIMEOUT_MS) || 15000, 1000);
+  const qrCooldownSegundos =
+    process.env.UNIFI_QR_COOLDOWN_SEGUNDOS !== undefined &&
+    process.env.UNIFI_QR_COOLDOWN_SEGUNDOS !== ''
+      ? Math.max(Number(process.env.UNIFI_QR_COOLDOWN_SEGUNDOS) || 0, 0)
+      : 30;
 
   return {
     baseUrl: `https://${host}:${port}/api/v1/developer`,
@@ -28,9 +38,12 @@ const obtenerConfiguracionUnifi = () => {
     puertaDefecto,
     puertaPrincipalId,
     puertaPrincipalNombre,
+    puertasVisitante,
     ventanaSegundos,
     maxAccesos,
     pollIntervalMs,
+    timeoutMs,
+    qrCooldownSegundos,
   };
 };
 
@@ -58,12 +71,18 @@ const EP_TOPOLOGY = '/door_groups/topology';
 const EP_SYSTEM_LOGS = '/system/logs';
 const VISIT_REASON_DEFECTO = 'Others';
 
+// Agentes HTTPS reutilizables con keepAlive para no repetir el handshake TLS en cada petición
+const agentesHttps = {
+  verificado: new https.Agent({ rejectUnauthorized: true, keepAlive: true }),
+  sinVerificar: new https.Agent({ rejectUnauthorized: false, keepAlive: true }),
+};
+
 /**
  * Realiza una petición HTTPS a la API Developer de UniFi Access (puerto 12445),
  * soportando certificados autofirmados locales y respuestas JSON o binarias (PNG).
  */
 const peticionUnifi = (metodo, ruta, cuerpoJson = undefined) => {
-  const { baseUrl, token, verifySsl } = obtenerConfiguracionUnifi();
+  const { baseUrl, token, verifySsl, timeoutMs } = obtenerConfiguracionUnifi();
   const urlCompleta = new URL(`${baseUrl.replace(/\/$/, '')}${ruta}`);
 
   const cuerpoSerializado =
@@ -79,9 +98,7 @@ const peticionUnifi = (metodo, ruta, cuerpoJson = undefined) => {
     cabeceras['Content-Length'] = cuerpoSerializado.length;
   }
 
-  const agenteHttps = new https.Agent({
-    rejectUnauthorized: verifySsl,
-  });
+  const agenteHttps = verifySsl ? agentesHttps.verificado : agentesHttps.sinVerificar;
 
   return new Promise((resolver, rechazar) => {
     const solicitud = https.request(
@@ -90,7 +107,7 @@ const peticionUnifi = (metodo, ruta, cuerpoJson = undefined) => {
         method: metodo,
         headers: cabeceras,
         agent: agenteHttps,
-        timeout: 4000,
+        timeout: timeoutMs,
       },
       (respuesta) => {
         const fragmentos = [];
@@ -327,8 +344,16 @@ const crearVisitanteUnifi = async ({
   const config = obtenerConfiguracionUnifi();
   const listaPuertas =
     Array.isArray(doorIds) && doorIds.length > 0
-      ? doorIds
-      : [config.puertaDefecto];
+      ? doorIds.map((id) => String(id).trim()).filter(Boolean)
+      : config.puertasVisitante;
+
+  if (listaPuertas.length === 0) {
+    const errorConfig = new Error(
+      'No hay puertas configuradas para el visitante. Define UNIFI_PUERTAS_VISITANTE o UNIFI_PUERTA_DEFECTO en server/.env.'
+    );
+    errorConfig.codigoHttp = 500;
+    throw errorConfig;
+  }
 
   const duracionSegundos =
     Number(ventanaSegundos) > 0 ? Number(ventanaSegundos) : config.ventanaSegundos;
@@ -535,30 +560,102 @@ const generarQrVisitanteUnifi = async (visitorId) => {
 };
 
 /**
- * 4) OBTENER LOGS DE APERTURA DE PUERTA DEL VISITANTE en UniFi Access.
+ * Extrae la lista de eventos y el conteo total (si la consola lo informa) de una respuesta de /system/logs.
+ */
+const extraerListaYTotalLogsUnifi = (datos) => {
+  if (Array.isArray(datos)) {
+    return { items: datos, total: null };
+  }
+  if (datos && typeof datos === 'object') {
+    const totalRaiz = Number(datos.total ?? datos.total_count);
+    const interno = datos.data ?? [];
+    if (Array.isArray(interno)) {
+      return {
+        items: interno,
+        total: Number.isFinite(totalRaiz) && totalRaiz >= 0 ? totalRaiz : null,
+      };
+    }
+    if (interno && typeof interno === 'object' && Array.isArray(interno.hits)) {
+      const totalInterno = Number(
+        interno.total?.value ?? interno.total ?? datos.total
+      );
+      return {
+        items: interno.hits,
+        total: Number.isFinite(totalInterno) && totalInterno >= 0 ? totalInterno : null,
+      };
+    }
+  }
+  return { items: [], total: null };
+};
+
+/**
+ * Recorre todas las páginas de /system/logs para una ventana [since, until] dada,
+ * deduplicando eventos por ID y respetando un límite máximo de páginas de seguridad.
+ */
+const consultarTodasLasPaginasLogsUnifi = async (
+  cuerpoBase,
+  {
+    pageSize = 100,
+    maxPaginas = Math.max(Number(process.env.UNIFI_LOGS_MAX_PAGINAS) || 25, 1),
+    ejecutarPeticion = (cuerpo) => peticionUnifi('POST', EP_SYSTEM_LOGS, cuerpo),
+  } = {}
+) => {
+  const acumulados = [];
+  const idsVistos = new Set();
+  const untilFijo = Number(cuerpoBase.until) || Math.floor(Date.now() / 1000);
+
+  for (let pageNum = 1; pageNum <= maxPaginas; pageNum += 1) {
+    const cuerpo = {
+      ...cuerpoBase,
+      until: untilFijo,
+      page_num: pageNum,
+      page_size: pageSize,
+    };
+
+    const datos = await ejecutarPeticion(cuerpo);
+    const { items, total } = extraerListaYTotalLogsUnifi(datos);
+
+    if (!Array.isArray(items) || items.length === 0) {
+      break;
+    }
+
+    let nuevosEnPagina = 0;
+    for (const ev of items) {
+      const clave = String(ev?._id || ev?.id || ev?.['@timestamp'] || '').trim();
+      if (clave) {
+        if (idsVistos.has(clave)) continue;
+        idsVistos.add(clave);
+      }
+      acumulados.push(ev);
+      nuevosEnPagina += 1;
+    }
+
+    // Si la página no aportó ningún evento nuevo (ej. firmware que ignora page_num) o vino incompleta, terminamos
+    if (nuevosEnPagina === 0 || items.length < pageSize) {
+      break;
+    }
+
+    if (total !== null && acumulados.length >= total) {
+      break;
+    }
+  }
+
+  return acumulados;
+};
+
+/**
+ * 4) OBTENER LOGS DE APERTURA DE PUERTA DEL VISITANTE en UniFi Access (todas las páginas).
  */
 const obtenerLogsVisitanteUnifi = async (visitorId, desdeTimestamp) => {
   if (String(visitorId).startsWith('sim-')) {
     return [];
   }
-  const cuerpo = {
+  return consultarTodasLasPaginasLogsUnifi({
     topic: 'door_openings',
     since: Number(desdeTimestamp) || Math.floor(Date.now() / 1000) - 3600,
     until: Math.floor(Date.now() / 1000),
     actor_id: String(visitorId),
-    page_num: 1,
-    page_size: 100,
-  };
-
-  const datos = await peticionUnifi('POST', EP_SYSTEM_LOGS, cuerpo);
-  if (datos && typeof datos === 'object') {
-    const interno = datos.data ?? [];
-    if (Array.isArray(interno)) return interno;
-    if (interno && typeof interno === 'object' && Array.isArray(interno.hits)) {
-      return interno.hits;
-    }
-  }
-  return Array.isArray(datos) ? datos : [];
+  });
 };
 
 /**
@@ -607,7 +704,7 @@ const obtenerPuertaDeEventoUnifi = (evento) => {
 
 /**
  * Determina si el evento de apertura ocurrió en la Puerta Principal del edificio
- * (En UniFi Access de Lira Seguridad: "Puerta Ppal LIRA", ID: ea3c1477-dd1c-4575-8b24-c916b46d0a90).
+ * según UNIFI_PUERTA_PRINCIPAL_ID y UNIFI_PUERTA_PRINCIPAL_NOMBRE configurados en server/.env.
  */
 const esPuertaPrincipalUnifi = (evento) => {
   const { puertaPrincipalId, puertaPrincipalNombre } = obtenerConfiguracionUnifi();
@@ -698,6 +795,111 @@ const obtenerDireccionYHoraEventoUnifi = (evento) => {
 };
 
 /**
+ * Evalúa los eventos de apertura de un QR aplicando un filtro antirrebote (cooldown)
+ * para que dos lecturas seguidas del mismo QR en pocos segundos no consuman dos usos.
+ * Soporta en `eventosVistosRaw` tanto strings heredados ("ev-1") como objetos { id, tsMs, contado }.
+ */
+const evaluarEventosQrConAntirrebote = ({
+  eventos = [],
+  eventosVistosRaw = '[]',
+  visitorId,
+  cooldownSegundos = obtenerConfiguracionUnifi().qrCooldownSegundos,
+}) => {
+  let listaPrevia = [];
+  try {
+    const parseado =
+      typeof eventosVistosRaw === 'string'
+        ? JSON.parse(eventosVistosRaw || '[]')
+        : eventosVistosRaw;
+    if (Array.isArray(parseado)) listaPrevia = parseado;
+  } catch {
+    listaPrevia = [];
+  }
+
+  const registrosVistos = [];
+  const idsVistos = new Set();
+  let totalAccesosConcedidos = 0;
+  let ultimoTsContadoMs = 0;
+
+  for (const item of listaPrevia) {
+    if (typeof item === 'string' && item.trim()) {
+      const id = item.trim();
+      if (!idsVistos.has(id)) {
+        idsVistos.add(id);
+        registrosVistos.push({ id, tsMs: 0, contado: true });
+        totalAccesosConcedidos += 1;
+      }
+    } else if (item && typeof item === 'object' && item.id) {
+      const id = String(item.id).trim();
+      if (id && !idsVistos.has(id)) {
+        const contado = item.contado !== false;
+        const tsMs = Number(item.tsMs) || 0;
+        idsVistos.add(id);
+        registrosVistos.push({ id, tsMs, contado });
+        if (contado) {
+          totalAccesosConcedidos += 1;
+          if (tsMs > ultimoTsContadoMs) ultimoTsContadoMs = tsMs;
+        }
+      }
+    }
+  }
+
+  const cooldownMs = Math.max(Number(cooldownSegundos) || 0, 0) * 1000;
+  const eventosOrdenados = ordenarEventosUnifiCronologicamente(eventos);
+
+  let huboCambioEventos = false;
+  let huboSalidaPuertaPrincipal = false;
+  const logsConsola = [];
+
+  for (const ev of eventosOrdenados) {
+    const evId = String(ev?._id || ev?.id || ev?.['@timestamp'] || '').trim();
+    if (!evId || idsVistos.has(evId)) continue;
+    if (!esAccesoConcedidoUnifi(ev, visitorId)) continue;
+
+    const tsEventoMs = obtenerTimestampMsEventoUnifi(ev) || Date.now();
+    const dentroDeCooldown =
+      cooldownMs > 0 &&
+      ultimoTsContadoMs > 0 &&
+      tsEventoMs >= ultimoTsContadoMs &&
+      tsEventoMs - ultimoTsContadoMs < cooldownMs;
+
+    idsVistos.add(evId);
+    huboCambioEventos = true;
+    const puertaNombre = obtenerPuertaDeEventoUnifi(ev);
+
+    if (dentroDeCooldown) {
+      const deltaSeg = ((tsEventoMs - ultimoTsContadoMs) / 1000).toFixed(1);
+      registrosVistos.push({ id: evId, tsMs: tsEventoMs, contado: false });
+      logsConsola.push(
+        `[Monitor QR] Lectura ignorada por antirrebote (${deltaSeg}s < ${cooldownSegundos}s) para visitante ${visitorId} en '${puertaNombre}'`
+      );
+      continue;
+    }
+
+    totalAccesosConcedidos += 1;
+    ultimoTsContadoMs = tsEventoMs;
+    registrosVistos.push({ id: evId, tsMs: tsEventoMs, contado: true });
+
+    if (totalAccesosConcedidos >= 2 && esPuertaPrincipalUnifi(ev)) {
+      huboSalidaPuertaPrincipal = true;
+    }
+
+    logsConsola.push(
+      `[Monitor QR] Acceso CONCEDIDO #${totalAccesosConcedidos} para visitante ${visitorId} en '${puertaNombre}'`
+    );
+  }
+
+  return {
+    totalAccesosConcedidos,
+    eventosVistos: registrosVistos,
+    eventosVistosJson: JSON.stringify(registrosVistos),
+    huboCambioEventos,
+    huboSalidaPuertaPrincipal,
+    logsConsola,
+  };
+};
+
+/**
  * Normaliza un objeto de usuario devuelto por /api/v1/developer/users/search o /users.
  * Estos usuarios corresponden normalmente a empleados con reconocimiento facial / NFC cargado en UniFi.
  */
@@ -780,24 +982,23 @@ const buscarUsuariosUnifi = async (keyword = '') => {
  * 6) OBTENER LOGS GENERALES DE APERTURA DE PUERTA (para detectar entradas/salidas por rostro de empleados)
  */
 const obtenerLogsPuertasGeneralesUnifi = async (desdeTimestamp) => {
-  const cuerpo = {
+  return consultarTodasLasPaginasLogsUnifi({
     topic: 'door_openings',
     since: Number(desdeTimestamp) || Math.floor(Date.now() / 1000) - 300,
     until: Math.floor(Date.now() / 1000),
-    page_num: 1,
-    page_size: 100,
-  };
-
-  const datos = await peticionUnifi('POST', EP_SYSTEM_LOGS, cuerpo);
-  if (datos && typeof datos === 'object') {
-    const interno = datos.data ?? [];
-    if (Array.isArray(interno)) return interno;
-    if (interno && typeof interno === 'object' && Array.isArray(interno.hits)) {
-      return interno.hits;
-    }
-  }
-  return Array.isArray(datos) ? datos : [];
+  });
 };
+
+const MAPA_ESCAPE_HTML = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+};
+
+const escaparHtml = (valor) =>
+  String(valor ?? '').replace(/[&<>"']/g, (caracter) => MAPA_ESCAPE_HTML[caracter]);
 
 /**
  * Envía el código QR (PNG con margen blanco quiet-zone) al correo electrónico del visitante.
@@ -838,6 +1039,14 @@ const enviarQrPorCorreo = async ({
       })
     : '1 hora';
 
+  const nombreAsunto = String(nombreCompleto ?? '').replace(/[\r\n]+/g, ' ').trim();
+  const nombreSeguro = escaparHtml(nombreCompleto);
+  const cedulaSegura = escaparHtml(cedula);
+  const motivoSeguro = escaparHtml(motivo || 'Visita autorizada');
+  const vigenciaSegura = escaparHtml(horaVencimiento);
+  const maxUsosSeguro = escaparHtml(maxUsos);
+  const cedulaArchivo = String(cedula ?? '').replace(/[^a-zA-Z0-9_-]/g, '') || 'visitante';
+
   const transportador = nodemailer.createTransport({
     host: smtpHost,
     port: smtpPort,
@@ -851,16 +1060,16 @@ const enviarQrPorCorreo = async ({
   await transportador.sendMail({
     from: smtpFrom,
     to: correoDestino,
-    subject: `Pase de Ingreso QR - Lira Seguridad (${nombreCompleto})`,
+    subject: `Pase de Ingreso QR - Lira Seguridad (${nombreAsunto})`,
     html: `
       <div style="font-family: Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
         <h2 style="color: #0066cc; margin-top: 0;">Pase de Ingreso QR - Lira Seguridad</h2>
-        <p>Hola <strong>${nombreCompleto}</strong> (C.C. ${cedula}),</p>
+        <p>Hola <strong>${nombreSeguro}</strong> (C.C. ${cedulaSegura}),</p>
         <p>Se ha generado tu código QR de invitación para ingresar a las instalaciones:</p>
         <ul>
-          <li><strong>Motivo:</strong> ${motivo || 'Visita autorizada'}</li>
-          <li><strong>Vigencia hasta:</strong> ${horaVencimiento}</li>
-          <li><strong>Accesos permitidos:</strong> ${maxUsos} (1 entrada + 1 salida)</li>
+          <li><strong>Motivo:</strong> ${motivoSeguro}</li>
+          <li><strong>Vigencia hasta:</strong> ${vigenciaSegura}</li>
+          <li><strong>Accesos permitidos:</strong> ${maxUsosSeguro}</li>
         </ul>
         <div style="text-align: center; margin: 24px 0; background: #ffffff; padding: 16px;">
           <img src="cid:qr_unifi_lira" alt="Código QR de Acceso" style="max-width: 240px; height: auto;" />
@@ -872,7 +1081,7 @@ const enviarQrPorCorreo = async ({
     `,
     attachments: [
       {
-        filename: `pase_qr_${cedula}.png`,
+        filename: `pase_qr_${cedulaArchivo}.png`,
         content: bufferPng,
         contentType: 'image/png',
         cid: 'qr_unifi_lira',
@@ -894,6 +1103,7 @@ module.exports = {
   listarPuertasUnifi,
   idsTodasLasPuertasUnifi,
   generarQrVisitanteUnifi,
+  consultarTodasLasPaginasLogsUnifi,
   obtenerLogsVisitanteUnifi,
   obtenerLogsPuertasGeneralesUnifi,
   buscarUsuariosUnifi,
@@ -904,5 +1114,7 @@ module.exports = {
   obtenerTimestampMsEventoUnifi,
   ordenarEventosUnifiCronologicamente,
   obtenerDireccionYHoraEventoUnifi,
+  evaluarEventosQrConAntirrebote,
+  escaparHtml,
   enviarQrPorCorreo,
 };
