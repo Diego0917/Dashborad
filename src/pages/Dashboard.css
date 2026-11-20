@@ -260,6 +260,39 @@
   border-radius: 9999px;
 }
 
+.badge-estado-edificio {
+  display: inline-block;
+  padding: 0.22rem 0.65rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #22543d;
+  background-color: #c6f6d5;
+  border: 1px solid #9ae6b4;
+  border-radius: 9999px;
+}
+
+.badge-estado-fuera {
+  display: inline-block;
+  padding: 0.22rem 0.65rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #4a5568;
+  background-color: #edf2f7;
+  border: 1px solid #cbd5e0;
+  border-radius: 9999px;
+}
+
+.badge-estado-sin-salida {
+  display: inline-block;
+  padding: 0.22rem 0.65rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #975a16;
+  background-color: #fefcbf;
+  border: 1px solid #f6e05e;
+  border-radius: 9999px;
+}
+
 .badge-esperando-llegada {
   display: inline-block;
   padding: 0.2rem 0.55rem;
@@ -369,6 +402,81 @@
   border-radius: 8px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
   border-left: 4px solid #0066cc;
+}
+
+.kpi-card--clickable {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  border-top: none;
+  border-right: none;
+  border-bottom: none;
+  text-align: left;
+  font-family: inherit;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.kpi-card--clickable:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.12);
+}
+
+.kpi-card--clickable:focus-visible {
+  outline: 2px solid #0066cc;
+  outline-offset: 2px;
+}
+
+.kpi-cta {
+  margin-top: auto;
+  padding-top: 0.65rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #0066cc;
+}
+
+.modal-card--wide {
+  max-width: 780px;
+}
+
+.kpi-modal-search {
+  width: 100%;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid #cbd5e0;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  margin-bottom: 0.85rem;
+  box-sizing: border-box;
+}
+
+.kpi-modal-table-wrapper {
+  max-height: 52vh;
+  overflow-y: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+}
+
+.kpi-modal-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.86rem;
+}
+
+.kpi-modal-table th,
+.kpi-modal-table td {
+  padding: 0.6rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid #edf2f7;
+}
+
+.kpi-modal-table th {
+  position: sticky;
+  top: 0;
+  background-color: #f7fafc;
+  color: #4a5568;
+  font-weight: 600;
+  z-index: 1;
 }
 
 .kpi-card--green {

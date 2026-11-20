@@ -386,6 +386,31 @@ aplicacion.get('/api/visitas/estadisticas', verificarTokenJwt, async (solicitud,
       busqueda,
     });
 
+    // Expresión reutilizable que replica la lógica del último movimiento real en movimientos_json
+    const condicionActualmenteDentroSql = `(
+      (
+        JSON_VALID(registros_ingreso.movimientos_json)
+        AND JSON_LENGTH(registros_ingreso.movimientos_json) > 0
+        AND JSON_UNQUOTE(
+          JSON_EXTRACT(
+            registros_ingreso.movimientos_json,
+            CONCAT('$[', JSON_LENGTH(registros_ingreso.movimientos_json) - 1, '].tipo')
+          )
+        ) IN ('ENTRADA', 'ACCESO_INTERNO')
+      )
+      OR (
+        (
+          registros_ingreso.movimientos_json IS NULL
+          OR NOT JSON_VALID(registros_ingreso.movimientos_json)
+          OR JSON_LENGTH(registros_ingreso.movimientos_json) = 0
+        )
+        AND (
+          registros_ingreso.total_entradas > registros_ingreso.total_salidas
+          OR registros_ingreso.hora_salida IS NULL
+        )
+      )
+    )`;
+
     const consultaPorRolSql = `
       SELECT
         roles.nombre_rol AS rol,
@@ -409,12 +434,22 @@ aplicacion.get('/api/visitas/estadisticas', verificarTokenJwt, async (solicitud,
           CASE
             WHEN (accesos_qr.id_qr IS NULL OR accesos_qr.usos_actuales >= 1)
               AND registros_ingreso.hora_ingreso IS NOT NULL
-              AND registros_ingreso.hora_salida IS NULL
               AND registros_ingreso.fecha_ingreso = CURRENT_DATE
+              AND ${condicionActualmenteDentroSql}
             THEN 1
             ELSE 0
           END
         ) AS en_edificio_hoy,
+        SUM(
+          CASE
+            WHEN (accesos_qr.id_qr IS NULL OR accesos_qr.usos_actuales >= 1)
+              AND registros_ingreso.hora_ingreso IS NOT NULL
+              AND registros_ingreso.fecha_ingreso = CURRENT_DATE
+              AND NOT ${condicionActualmenteDentroSql}
+            THEN 1
+            ELSE 0
+          END
+        ) AS por_fuera_hoy,
         SUM(
           CASE
             WHEN (accesos_qr.id_qr IS NULL OR accesos_qr.usos_actuales >= 1)
@@ -494,6 +529,7 @@ aplicacion.get('/api/visitas/estadisticas', verificarTokenJwt, async (solicitud,
         totalEntradas: Number(fila.total_entradas) || 0,
         visitantesUnicos: Number(fila.visitantes_unicos) || 0,
         enEdificioHoy: Number(fila.en_edificio_hoy) || 0,
+        porFueraHoy: Number(fila.por_fuera_hoy) || 0,
         sinSalidaAnteriores: Number(fila.sin_salida_anteriores) || 0,
         sumaMinutos: Number(fila.suma_minutos) || 0,
         visitasCerradas: Number(fila.visitas_cerradas) || 0,

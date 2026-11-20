@@ -18,7 +18,6 @@ import {
   obtenerRangoFechas,
   formatearFechaLegible,
   obtenerClaveDia,
-  esMismoDia,
   formatearDuracionLegible,
 } from '../utils/dateHelpers';
 import {
@@ -52,6 +51,11 @@ const ETIQUETAS_PERIODO = {
 
 const INTERVALO_ACTUALIZACION_MS = 300000; // 5 minutos
 
+// Bandera para mostrar u ocultar temporalmente el botón "+ Nueva Invitación / QR"
+// Para reactivarlo: definir VITE_MOSTRAR_INVITACION_QR=true o cambiar 'false' por 'true'
+const MOSTRAR_NUEVA_INVITACION_QR =
+  String(import.meta.env.VITE_MOSTRAR_INVITACION_QR || 'false').toLowerCase() === 'true';
+
 const construirParametrosFiltroServidor = (filtros) => {
   const rangoFechas = obtenerRangoFechas(
     filtros.periodo,
@@ -73,6 +77,82 @@ const construirParametrosFiltroServidor = (filtros) => {
   }
 
   return parametros;
+};
+
+/**
+ * Determina si la persona se encuentra actualmente dentro del edificio:
+ * 1) Si el registro tiene `movimientos_json`, el estado real lo define el ÚLTIMO movimiento:
+ *    - 'ENTRADA' o 'ACCESO_INTERNO' -> En el edificio
+ *    - 'SALIDA' -> Por fuera
+ * 2) Si no hay `movimientos_json`, usa como respaldo los contadores y `hora_salida`.
+ */
+const determinarEstaEnEdificio = (visita) => {
+  if (!visita) return false;
+  const esQrSinLlegada = Boolean(visita.id_qr) && Number(visita.usos_actuales) === 0;
+  if (esQrSinLlegada) return false;
+
+  try {
+    const movs = JSON.parse(visita.movimientos_json || '[]');
+    if (Array.isArray(movs) && movs.length > 0) {
+      const ultimo = movs[movs.length - 1];
+      if (ultimo && ultimo.tipo) {
+        return ultimo.tipo === 'ENTRADA' || ultimo.tipo === 'ACCESO_INTERNO';
+      }
+    }
+  } catch {
+    // Respaldo a columnas si movimientos_json no es válido
+  }
+
+  const haIngresado = Boolean(
+    visita.hora_ingreso && String(visita.hora_ingreso).trim() !== ''
+  );
+  if (!haIngresado) return false;
+
+  const tieneSalida = Boolean(
+    visita.hora_salida && String(visita.hora_salida).trim() !== ''
+  );
+  const entradasContadas = Number(visita.total_entradas) || 1;
+  const salidasContadas = Number(visita.total_salidas) || (tieneSalida ? 1 : 0);
+
+  return entradasContadas > salidasContadas || !tieneSalida;
+};
+
+const horaTextoAMinutos = (horaTexto) => {
+  const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(String(horaTexto || '').trim());
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  const seg = Number(m[3] || 0);
+  if (h < 0 || h > 23 || min < 0 || min > 59 || seg < 0 || seg > 59) return null;
+  return h * 60 + min + seg / 60;
+};
+
+const esRegistroConIngresoEfectivo = (visita) => {
+  if (!visita) return false;
+  const esQrSinLlegada = Boolean(visita.id_qr) && Number(visita.usos_actuales) === 0;
+  if (esQrSinLlegada) return false;
+  return Boolean(visita.hora_ingreso && String(visita.hora_ingreso).trim() !== '');
+};
+
+/**
+ * Devuelve el badge de estado que corresponde mostrar según el último movimiento
+ * y si el registro pertenece al día de hoy o a un día anterior:
+ * - Hoy + abierto -> "En el edificio" (verde)
+ * - Día anterior + abierto -> "Sin salida" (amarillo/naranja)
+ * - Cerrado con salida (o sin ingreso) -> "Por fuera" (gris)
+ */
+const obtenerEstadoVisita = (visita, hoyClave) => {
+  const abierto = determinarEstaEnEdificio(visita);
+  if (!abierto) {
+    return { tipo: 'fuera', texto: 'Por fuera', clase: 'badge-estado-fuera' };
+  }
+
+  const fechaRegistro = String(visita?.fecha_ingreso || '').slice(0, 10);
+  if (hoyClave && fechaRegistro && fechaRegistro < hoyClave) {
+    return { tipo: 'sin_salida', texto: 'Sin salida', clase: 'badge-estado-sin-salida' };
+  }
+
+  return { tipo: 'edificio', texto: 'En el edificio', clase: 'badge-estado-edificio' };
 };
 
 const Dashboard = () => {
@@ -103,6 +183,11 @@ const Dashboard = () => {
   const [pestanaActiva, setPestanaActiva] = useState('listado');
   const [ultimaActualizacion, setUltimaActualizacion] = useState(null);
   const [visitaDetalleModal, setVisitaDetalleModal] = useState(null);
+  const [kpiModalActivo, setKpiModalActivo] = useState(null);
+  const [registrosKpiModal, setRegistrosKpiModal] = useState([]);
+  const [cargandoKpiModal, setCargandoKpiModal] = useState(false);
+  const [busquedaKpiModal, setBusquedaKpiModal] = useState('');
+  const [fechaReferenciaKpi, setFechaReferenciaKpi] = useState(null);
   const [sincronizandoEmpleados, setSincronizandoEmpleados] = useState(false);
   const [mensajeSincronizacion, setMensajeSincronizacion] = useState('');
   const [revocandoQr, setRevocandoQr] = useState(false);
@@ -272,6 +357,204 @@ const Dashboard = () => {
     }
   };
 
+  const abrirModalKpi = async (tipoKpi) => {
+    setKpiModalActivo(tipoKpi);
+    setBusquedaKpiModal('');
+    setFechaReferenciaKpi(new Date());
+
+    // Si todos los registros del filtro ya están en la página 1, los reutilizamos sin otra petición
+    if (paginaActual === 1 && totalRegistros <= visitasPagina.length) {
+      setRegistrosKpiModal(visitasPagina);
+      setCargandoKpiModal(false);
+      return;
+    }
+
+    setCargandoKpiModal(true);
+    try {
+      const parametrosBase = construirParametrosFiltroServidor(filtrosAplicados);
+      const respuesta = await obtenerVisitas({
+        ...parametrosBase,
+        limite: 1000,
+        desplazamiento: 0,
+      });
+      const lista = Array.isArray(respuesta)
+        ? respuesta
+        : Array.isArray(respuesta?.registros)
+          ? respuesta.registros
+          : [];
+      setRegistrosKpiModal(lista);
+    } catch (errorModalKpi) {
+      console.error('Error al cargar detalle de KPI:', errorModalKpi);
+      setRegistrosKpiModal(visitasPagina);
+    } finally {
+      setCargandoKpiModal(false);
+    }
+  };
+
+  const datosModalKpi = useMemo(() => {
+    if (!kpiModalActivo) return { titulo: '', subtitulo: '', filas: [] };
+
+    const termino = busquedaKpiModal.trim().toLowerCase();
+    const coincideBusqueda = (nombre, cedula, rol) => {
+      if (!termino) return true;
+      return (
+        String(nombre || '').toLowerCase().includes(termino) ||
+        String(cedula || '').toLowerCase().includes(termino) ||
+        String(rol || '').toLowerCase().includes(termino)
+      );
+    };
+
+    const conIngreso = registrosKpiModal.filter(esRegistroConIngresoEfectivo);
+    const referenciaFecha = fechaReferenciaKpi || ultimaActualizacion;
+    const hoyClaveModal = referenciaFecha ? obtenerClaveDia(referenciaFecha) : '';
+
+    if (kpiModalActivo === 'entradas') {
+      const filas = conIngreso
+        .filter((v) => coincideBusqueda(v.nombre_completo, v.cedula, v.rol))
+        .map((v) => ({
+          clave: v.id_registro ?? `${v.cedula}-${v.fecha_ingreso}-${v.hora_ingreso}`,
+          visita: v,
+          estadoBadge: obtenerEstadoVisita(v, hoyClaveModal),
+        }));
+
+      return {
+        titulo: filtrosAplicados.periodo === 'hoy' ? 'Entradas de hoy' : 'Entradas en el periodo',
+        subtitulo: `${filas.length} registro(s) con ingreso efectivo`,
+        filas,
+      };
+    }
+
+    if (kpiModalActivo === 'unicas') {
+      const mapaPersonas = new Map();
+      for (const v of conIngreso) {
+        const clavePersona = String(v.cedula || v.nombre_completo);
+        const entradasReg = Number(v.total_entradas) || 1;
+        const salidasReg = Number(v.total_salidas) || (v.hora_salida ? 1 : 0);
+
+        if (!mapaPersonas.has(clavePersona)) {
+          mapaPersonas.set(clavePersona, {
+            clave: clavePersona,
+            nombre_completo: v.nombre_completo,
+            cedula: v.cedula,
+            rol: v.rol,
+            dias: 1,
+            totalEntradas: entradasReg,
+            totalSalidas: salidasReg,
+            visitaMasReciente: v,
+            estadoBadge: obtenerEstadoVisita(v, hoyClaveModal),
+          });
+        } else {
+          const actual = mapaPersonas.get(clavePersona);
+          actual.dias += 1;
+          actual.totalEntradas += entradasReg;
+          actual.totalSalidas += salidasReg;
+        }
+      }
+
+      const filas = Array.from(mapaPersonas.values())
+        .filter((p) => coincideBusqueda(p.nombre_completo, p.cedula, p.rol))
+        .sort((a, b) => b.totalEntradas - a.totalEntradas);
+
+      return {
+        titulo:
+          filtrosAplicados.filtroRol === 'Empleado'
+            ? 'Empleados únicos en el periodo'
+            : 'Personas únicas en el periodo',
+        subtitulo: `${filas.length} persona(s) diferente(s)`,
+        filas,
+      };
+    }
+
+    if (kpiModalActivo === 'enEdificio') {
+      const referencia = fechaReferenciaKpi || ultimaActualizacion;
+      const hoyClave = referencia ? obtenerClaveDia(referencia) : '';
+      const minutosAhora = referencia
+        ? referencia.getHours() * 60 + referencia.getMinutes()
+        : null;
+
+      const filas = conIngreso
+        .filter((v) => {
+          const fechaClave = String(v.fecha_ingreso || '').slice(0, 10);
+          return (!hoyClave || fechaClave === hoyClave) && determinarEstaEnEdificio(v);
+        })
+        .filter((v) => coincideBusqueda(v.nombre_completo, v.cedula, v.rol))
+        .map((v) => {
+          const minIngreso = horaTextoAMinutos(v.hora_ingreso);
+          const minutosDentro =
+            minutosAhora !== null && minIngreso !== null && minutosAhora >= minIngreso
+              ? Math.round(minutosAhora - minIngreso)
+              : null;
+          return {
+            clave: v.id_registro ?? `${v.cedula}-${v.hora_ingreso}`,
+            visita: v,
+            minutosDentro,
+          };
+        });
+
+      return {
+        titulo: 'Actualmente en el edificio',
+        subtitulo: `${filas.length} persona(s) dentro en este momento (hoy)`,
+        filas,
+      };
+    }
+
+    if (kpiModalActivo === 'porFuera') {
+      const referencia = fechaReferenciaKpi || ultimaActualizacion;
+      const hoyClave = referencia ? obtenerClaveDia(referencia) : '';
+
+      const filas = conIngreso
+        .filter((v) => {
+          const fechaClave = String(v.fecha_ingreso || '').slice(0, 10);
+          return (!hoyClave || fechaClave === hoyClave) && !determinarEstaEnEdificio(v);
+        })
+        .filter((v) => coincideBusqueda(v.nombre_completo, v.cedula, v.rol))
+        .map((v) => ({
+          clave: v.id_registro ?? `${v.cedula}-${v.hora_ingreso}`,
+          visita: v,
+        }));
+
+      return {
+        titulo: 'Por fuera hoy',
+        subtitulo: `${filas.length} persona(s) que ingresaron hoy y ya salieron`,
+        filas,
+      };
+    }
+
+    // 'tiempoPromedio'
+    const filas = conIngreso
+      .map((v) => {
+        const minIn = horaTextoAMinutos(v.hora_ingreso);
+        const minOut = horaTextoAMinutos(v.hora_salida);
+        if (minIn === null || minOut === null || minOut < minIn) return null;
+        return {
+          clave: v.id_registro ?? `${v.cedula}-${v.fecha_ingreso}-${v.hora_ingreso}`,
+          visita: v,
+          duracionMinutos: Math.round(minOut - minIn),
+        };
+      })
+      .filter(Boolean)
+      .filter((item) =>
+        coincideBusqueda(item.visita.nombre_completo, item.visita.cedula, item.visita.rol)
+      )
+      .sort((a, b) => b.duracionMinutos - a.duracionMinutos);
+
+    return {
+      titulo:
+        filtrosAplicados.filtroRol === 'Empleado'
+          ? 'Permanencia por persona (mayor a menor)'
+          : 'Duración de visitas cerradas (mayor a menor)',
+      subtitulo: `${filas.length} registro(s) con entrada y salida`,
+      filas,
+    };
+  }, [
+    kpiModalActivo,
+    registrosKpiModal,
+    busquedaKpiModal,
+    filtrosAplicados,
+    fechaReferenciaKpi,
+    ultimaActualizacion,
+  ]);
+
   const formatearTiempoVidaVisita = (visita) => {
     if (!visita) return '1 hora (Estándar)';
 
@@ -331,6 +614,7 @@ const Dashboard = () => {
     totalEntradasPeriodo,
     visitantesUnicosPeriodo,
     personasEnEdificioHoy,
+    personasPorFueraHoy,
     detalleEnEdificio,
     tiempoPromedioVisita,
     detalleTiempoPromedio,
@@ -347,6 +631,7 @@ const Dashboard = () => {
         totalEntradasPeriodo: 0,
         visitantesUnicosPeriodo: 0,
         personasEnEdificioHoy: 0,
+        personasPorFueraHoy: 0,
         detalleEnEdificio: 'Sin registros en el filtro actual',
         tiempoPromedioVisita: '--',
         detalleTiempoPromedio: 'Sin salidas registradas',
@@ -359,6 +644,7 @@ const Dashboard = () => {
     let conteoEntradas = 0;
     let conteoVisitantesUnicos = 0;
     let conteoEnEdificioHoy = 0;
+    let conteoPorFueraHoy = 0;
     let salidasPendientesAnteriores = 0;
     let sumaMinutosPermanencia = 0;
     let conteoVisitasCerradas = 0;
@@ -372,6 +658,7 @@ const Dashboard = () => {
       conteoEntradas += itemRol.totalEntradas;
       conteoVisitantesUnicos += itemRol.visitantesUnicos;
       conteoEnEdificioHoy += itemRol.enEdificioHoy;
+      conteoPorFueraHoy += Number(itemRol.porFueraHoy) || 0;
       salidasPendientesAnteriores += itemRol.sinSalidaAnteriores;
       sumaMinutosPermanencia += itemRol.sumaMinutos;
       conteoVisitasCerradas += itemRol.visitasCerradas;
@@ -421,6 +708,7 @@ const Dashboard = () => {
       totalEntradasPeriodo: conteoEntradas,
       visitantesUnicosPeriodo: conteoVisitantesUnicos,
       personasEnEdificioHoy: conteoEnEdificioHoy,
+      personasPorFueraHoy: conteoPorFueraHoy,
       detalleEnEdificio: textoDetalleEdificio,
       tiempoPromedioVisita: formatearDuracionLegible(promedioGeneralMinutos),
       detalleTiempoPromedio: textoDetallePromedio,
@@ -480,13 +768,15 @@ const Dashboard = () => {
         <h1>Dashboard - Lira Seguridad</h1>
         <div className="header-actions">
           <span>Bienvenido, {usuario?.nombreUsuario}</span>
-          <button
-            type="button"
-            onClick={() => navegar('/invitacion')}
-            className="new-invitation-button"
-          >
-            + Nueva Invitación / QR
-          </button>
+          {MOSTRAR_NUEVA_INVITACION_QR && (
+            <button
+              type="button"
+              onClick={() => navegar('/invitacion')}
+              className="new-invitation-button"
+            >
+              + Nueva Invitación / QR
+            </button>
+          )}
           <button
             type="button"
             onClick={manejarSincronizarEmpleados}
@@ -624,41 +914,37 @@ const Dashboard = () => {
                   <thead>
                     <tr>
                       <th>Nombre completo</th>
-                      <th>Cédula</th>
-                      <th>EPS</th>
-                      <th>ARL</th>
-                      <th>Teléfono</th>
+                      {filtrosAplicados.filtroRol !== 'Empleado' && (
+                        <>
+                          <th>Cédula</th>
+                          <th>EPS</th>
+                          <th>ARL</th>
+                          <th>Teléfono</th>
+                        </>
+                      )}
                       <th>Rol</th>
-                      <th>Fecha</th>
-                      <th>Entrada</th>
-                      <th>Salida</th>
+                      <th>Estado</th>
                       <th>Ver movimiento</th>
                     </tr>
                   </thead>
                   <tbody>
                     {visitasPagina.length === 0 ? (
                       <tr>
-                        <td colSpan="10" className="empty-cell">
+                        <td
+                          colSpan={filtrosAplicados.filtroRol !== 'Empleado' ? 8 : 4}
+                          className="empty-cell"
+                        >
                           No hay visitas para mostrar en el periodo seleccionado
                         </td>
                       </tr>
                     ) : (
                       visitasPagina.map((visita) => {
-                        const esQrSinLlegada =
-                          Boolean(visita.id_qr) && Number(visita.usos_actuales) === 0;
-                        const haIngresado =
-                          !esQrSinLlegada &&
-                          Boolean(
-                            visita.hora_ingreso && String(visita.hora_ingreso).trim() !== ''
-                          );
-                        const tieneSalida = Boolean(
-                          visita.hora_salida && String(visita.hora_salida).trim() !== ''
-                        );
-                        const sigueEnEdificioHoy =
-                          haIngresado &&
-                          !tieneSalida &&
-                          ultimaActualizacion &&
-                          esMismoDia(visita.fecha_ingreso, ultimaActualizacion);
+                        const hoyClave = ultimaActualizacion
+                          ? obtenerClaveDia(ultimaActualizacion)
+                          : '';
+                        const estadoBadge = obtenerEstadoVisita(visita, hoyClave);
+                        const mostrarColumnasVisitante =
+                          filtrosAplicados.filtroRol !== 'Empleado';
 
                         return (
                           <tr
@@ -668,65 +954,21 @@ const Dashboard = () => {
                             }
                           >
                             <td>{visita.nombre_completo}</td>
-                            <td>
-                              {String(visita.cedula || '').startsWith('UNIFI-')
-                                ? 'N/A'
-                                : visita.cedula}
-                            </td>
-                            <td>{visita.eps || 'N/A'}</td>
-                            <td>{visita.arl || 'N/A'}</td>
-                            <td>{visita.telefono || '-'}</td>
+                            {mostrarColumnasVisitante && (
+                              <>
+                                <td>
+                                  {String(visita.cedula || '').startsWith('UNIFI-')
+                                    ? 'N/A'
+                                    : visita.cedula}
+                                </td>
+                                <td>{visita.eps || 'N/A'}</td>
+                                <td>{visita.arl || 'N/A'}</td>
+                                <td>{visita.telefono || '-'}</td>
+                              </>
+                            )}
                             <td>{visita.rol}</td>
-                            <td>{formatearFechaLegible(visita.fecha_ingreso)}</td>
                             <td>
-                              {haIngresado ? (
-                                <>
-                                  {visita.hora_ingreso}
-                                  {Number(visita.total_entradas) > 1 && (
-                                    <span className="texto-pendiente" style={{ marginLeft: '0.35rem', fontWeight: 600 }}>
-                                      ({visita.total_entradas} ent.)
-                                    </span>
-                                  )}
-                                </>
-                              ) : (
-                                <span className="texto-pendiente">Sin ingresar aún</span>
-                              )}
-                            </td>
-                            <td>
-                              {tieneSalida ? (
-                                <>
-                                  {visita.hora_salida}
-                                  {Number(visita.total_salidas) >= 1 && (
-                                    <span className="texto-pendiente" style={{ marginLeft: '0.35rem', fontWeight: 600 }}>
-                                      ({visita.total_salidas} sal.)
-                                    </span>
-                                  )}
-                                  {Number(visita.total_entradas) > Number(visita.total_salidas) && (
-                                    <span className="badge-en-edificio" style={{ marginLeft: '0.45rem' }}>
-                                      Reingresó
-                                    </span>
-                                  )}
-                                </>
-                              ) : esQrSinLlegada ? (
-                                visita.estado_qr === 'EXPIRADO' ? (
-                                  <span className="badge-qr-expirado">QR Expirado (No llegó)</span>
-                                ) : visita.estado_qr === 'REVOCADO' ? (
-                                  <span className="badge-qr-expirado">QR Cancelado</span>
-                                ) : (
-                                  <span className="badge-esperando-llegada">
-                                    Esperando llegada (QR)
-                                  </span>
-                                )
-                              ) : sigueEnEdificioHoy ? (
-                                <span className="badge-en-edificio">
-                                  En el edificio
-                                  {(Number(visita.total_entradas) > 1 ||
-                                    Number(visita.total_salidas) > 0) &&
-                                    ` (${visita.total_entradas || 1} ent. / ${visita.total_salidas || 0} sal.)`}
-                                </span>
-                              ) : (
-                                <span className="texto-pendiente">Sin registrar</span>
-                              )}
+                              <span className={estadoBadge.clase}>{estadoBadge.texto}</span>
                             </td>
                             <td style={{ textAlign: 'center' }}>
                               <button
@@ -791,15 +1033,18 @@ const Dashboard = () => {
               </div>
             </>
           )}
+        </main>
+      )}
 
-          {visitaDetalleModal && (
-            <div
-              className="modal-overlay"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="modal-detalle-titulo"
-              onClick={() => setVisitaDetalleModal(null)}
-            >
+      {visitaDetalleModal && (
+        <div
+          className="modal-overlay"
+          style={{ zIndex: 1100 }}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="modal-detalle-titulo"
+          onClick={() => setVisitaDetalleModal(null)}
+        >
               <div
                 className="modal-card"
                 onClick={(evento) => evento.stopPropagation()}
@@ -819,6 +1064,55 @@ const Dashboard = () => {
                 </div>
 
                 <div className="modal-body">
+                  {(() => {
+                    const esQrSinLlegadaModal =
+                      Boolean(visitaDetalleModal.id_qr) &&
+                      Number(visitaDetalleModal.usos_actuales) === 0;
+                    const tieneSalidaModal = Boolean(
+                      visitaDetalleModal.hora_salida &&
+                        String(visitaDetalleModal.hora_salida).trim() !== ''
+                    );
+                    const hoyClaveDetalle = ultimaActualizacion
+                      ? obtenerClaveDia(ultimaActualizacion)
+                      : '';
+                    const estadoModal = obtenerEstadoVisita(visitaDetalleModal, hoyClaveDetalle);
+
+                    return (
+                      <div className="modal-detail-grid">
+                        <div>
+                          <span className="modal-detail-label">Estado actual</span>
+                          <p className="modal-detail-value" style={{ marginTop: '0.25rem' }}>
+                            <span className={estadoModal.clase}>{estadoModal.texto}</span>
+                          </p>
+                        </div>
+                        <div>
+                          <span className="modal-detail-label">Fecha del registro</span>
+                          <p className="modal-detail-value">
+                            {formatearFechaLegible(visitaDetalleModal.fecha_ingreso)}
+                          </p>
+                        </div>
+                        <div>
+                          <span className="modal-detail-label">Primera entrada</span>
+                          <p className="modal-detail-value">
+                            {esQrSinLlegadaModal
+                              ? 'Sin ingresar aún'
+                              : visitaDetalleModal.hora_ingreso || 'Sin registrar'}
+                          </p>
+                        </div>
+                        <div>
+                          <span className="modal-detail-label">Última salida</span>
+                          <p className="modal-detail-value">
+                            {tieneSalidaModal
+                              ? visitaDetalleModal.hora_salida
+                              : estadoModal.tipo === 'edificio'
+                                ? 'En el edificio (sin salida)'
+                                : 'Sin salida registrada'}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   <div className="modal-detail-item">
                     <span className="modal-detail-label">Motivo de la visita</span>
                     <p className="modal-detail-value">
@@ -828,7 +1122,7 @@ const Dashboard = () => {
 
                   <div className="modal-detail-item">
                     <span className="modal-detail-label">
-                      Veces de Entrada y Salida en este registro
+                      Historial de Movimientos ({formatearFechaLegible(visitaDetalleModal.fecha_ingreso)})
                     </span>
                     <p className="modal-detail-value">
                       <strong>
@@ -863,7 +1157,9 @@ const Dashboard = () => {
                             >
                               {listaMovs.map((m, idx) => (
                                 <li key={`${m.tipo}-${m.hora}-${idx}`}>
-                                  <strong>{m.tipo}:</strong> {m.hora}
+                                  <strong>{m.tipo}:</strong>{' '}
+                                  {formatearFechaLegible(visitaDetalleModal.fecha_ingreso)} a las{' '}
+                                  {m.hora}
                                   {m.puerta ? ` (${m.puerta})` : ''}
                                   {m.detalle ? ` — ${m.detalle}` : ''}
                                 </li>
@@ -895,26 +1191,6 @@ const Dashboard = () => {
                       </div>
                     </>
                   )}
-
-                  <div className="modal-detail-grid">
-                    <div>
-                      <span className="modal-detail-label">Fecha de ingreso</span>
-                      <p className="modal-detail-value">
-                        {formatearFechaLegible(visitaDetalleModal.fecha_ingreso)}
-                      </p>
-                    </div>
-                    <div>
-                      <span className="modal-detail-label">Hora entrada / salida</span>
-                      <p className="modal-detail-value">
-                        {Boolean(visitaDetalleModal.id_qr) &&
-                        Number(visitaDetalleModal.usos_actuales) === 0
-                          ? 'Pendiente de lectura del QR en cámara UniFi'
-                          : `${visitaDetalleModal.hora_ingreso || '--'} — ${
-                              visitaDetalleModal.hora_salida || 'En el edificio / Sin salida'
-                            }`}
-                      </p>
-                    </div>
-                  </div>
                 </div>
 
                 <div className="modal-footer" style={{ gap: '0.75rem' }}>
@@ -940,8 +1216,6 @@ const Dashboard = () => {
               </div>
             </div>
           )}
-        </main>
-      )}
 
       {pestanaActiva === 'estadisticas' && (
         <main className="dashboard-content">
@@ -984,20 +1258,52 @@ const Dashboard = () => {
           </div>
 
           <div className="kpi-grid">
-            <div className="kpi-card">
-              <p className="kpi-label">{esFiltroHoy ? 'Entradas hoy' : 'Entradas en el periodo'}</p>
+            <button
+              type="button"
+              className="kpi-card kpi-card--clickable"
+              onClick={() => abrirModalKpi('entradas')}
+            >
+              <p className="kpi-label">{esFiltroHoy ? 'Ingresos hoy' : 'Entradas en el periodo'}</p>
               <p className="kpi-value">{totalEntradasPeriodo}</p>
-            </div>
-            <div className="kpi-card kpi-card--green">
-              <p className="kpi-label">{etiquetaPersonasUnicas}</p>
-              <p className="kpi-value">{visitantesUnicosPeriodo}</p>
-            </div>
-            <div className="kpi-card kpi-card--orange">
+              <span className="kpi-cta no-print">Ver detalle →</span>
+            </button>
+            {esFiltroHoy ? (
+              <button
+                type="button"
+                className="kpi-card kpi-card--green kpi-card--clickable"
+                onClick={() => abrirModalKpi('porFuera')}
+              >
+                <p className="kpi-label">Por fuera hoy</p>
+                <p className="kpi-value">{personasPorFueraHoy}</p>
+                <p className="kpi-detail">Ingresaron hoy y ya salieron</p>
+                <span className="kpi-cta no-print">Ver quién salió →</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="kpi-card kpi-card--green kpi-card--clickable"
+                onClick={() => abrirModalKpi('unicas')}
+              >
+                <p className="kpi-label">{etiquetaPersonasUnicas}</p>
+                <p className="kpi-value">{visitantesUnicosPeriodo}</p>
+                <span className="kpi-cta no-print">Ver detalle →</span>
+              </button>
+            )}
+            <button
+              type="button"
+              className="kpi-card kpi-card--orange kpi-card--clickable"
+              onClick={() => abrirModalKpi('enEdificio')}
+            >
               <p className="kpi-label">Actualmente en el edificio</p>
               <p className="kpi-value">{personasEnEdificioHoy}</p>
               <p className="kpi-detail">{detalleEnEdificio}</p>
-            </div>
-            <div className="kpi-card kpi-card--purple">
+              <span className="kpi-cta no-print">Ver quién está adentro →</span>
+            </button>
+            <button
+              type="button"
+              className="kpi-card kpi-card--purple kpi-card--clickable"
+              onClick={() => abrirModalKpi('tiempoPromedio')}
+            >
               <p className="kpi-label">
                 {filtrosAplicados.filtroRol === 'Empleado'
                   ? 'Tiempo promedio de permanencia'
@@ -1005,7 +1311,8 @@ const Dashboard = () => {
               </p>
               <p className="kpi-value">{tiempoPromedioVisita}</p>
               <p className="kpi-detail">{detalleTiempoPromedio}</p>
-            </div>
+              <span className="kpi-cta no-print">Ver desglose →</span>
+            </button>
           </div>
 
           <div className="charts-grid">
@@ -1071,6 +1378,306 @@ const Dashboard = () => {
             </div>
           </div>
         </main>
+      )}
+
+      {kpiModalActivo && (
+        <div
+          className="modal-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="modal-kpi-titulo"
+          onClick={() => setKpiModalActivo(null)}
+        >
+          <div
+            className="modal-card modal-card--wide"
+            onClick={(evento) => evento.stopPropagation()}
+          >
+            <div className="modal-header">
+              <div>
+                <h3 id="modal-kpi-titulo" className="modal-title">
+                  {datosModalKpi.titulo}
+                </h3>
+                <p className="modal-subtitle">
+                  {datosModalKpi.subtitulo} · {descripcionFiltroActivo}
+                </p>
+              </div>
+            </div>
+
+            <div className="modal-body">
+              <input
+                type="text"
+                className="kpi-modal-search"
+                placeholder="Buscar por nombre, cédula o rol dentro de esta lista..."
+                value={busquedaKpiModal}
+                onChange={(e) => setBusquedaKpiModal(e.target.value)}
+              />
+
+              {cargandoKpiModal ? (
+                <p className="chart-empty">Cargando registros del periodo...</p>
+              ) : datosModalKpi.filas.length === 0 ? (
+                <p className="chart-empty">No hay registros para mostrar en este detalle.</p>
+              ) : (
+                <div className="kpi-modal-table-wrapper">
+                  <table className="kpi-modal-table">
+                    <thead>
+                      {kpiModalActivo === 'entradas' && (
+                        <tr>
+                          <th>Nombre</th>
+                          <th>Rol</th>
+                          <th>Fecha / Entrada</th>
+                          <th>Estado</th>
+                          <th style={{ textAlign: 'center' }}>Ver</th>
+                        </tr>
+                      )}
+                      {kpiModalActivo === 'unicas' && (
+                        <tr>
+                          <th>Nombre</th>
+                          <th>Rol</th>
+                          <th>Días</th>
+                          <th>Ent. / Sal.</th>
+                          <th>Estado</th>
+                          <th style={{ textAlign: 'center' }}>Ver</th>
+                        </tr>
+                      )}
+                      {kpiModalActivo === 'enEdificio' && (
+                        <tr>
+                          <th>Nombre</th>
+                          <th>Rol</th>
+                          <th>Hora entrada</th>
+                          <th>Tiempo adentro</th>
+                          <th style={{ textAlign: 'center' }}>Ver</th>
+                        </tr>
+                      )}
+                      {kpiModalActivo === 'porFuera' && (
+                        <tr>
+                          <th>Nombre</th>
+                          <th>Rol</th>
+                          <th>Primera entrada</th>
+                          <th>Última salida</th>
+                          <th style={{ textAlign: 'center' }}>Ver</th>
+                        </tr>
+                      )}
+                      {kpiModalActivo === 'tiempoPromedio' && (
+                        <tr>
+                          <th>Nombre</th>
+                          <th>Rol</th>
+                          <th>Fecha</th>
+                          <th>Entrada → Salida</th>
+                          <th>Duración</th>
+                          <th style={{ textAlign: 'center' }}>Ver</th>
+                        </tr>
+                      )}
+                    </thead>
+                    <tbody>
+                      {kpiModalActivo === 'entradas' &&
+                        datosModalKpi.filas.map((item) => (
+                          <tr key={item.clave}>
+                            <td>{item.visita.nombre_completo}</td>
+                            <td>{item.visita.rol}</td>
+                            <td>
+                              {formatearFechaLegible(item.visita.fecha_ingreso)} ·{' '}
+                              {item.visita.hora_ingreso}
+                            </td>
+                            <td>
+                              <span className={item.estadoBadge.clase}>
+                                {item.estadoBadge.texto}
+                              </span>
+                            </td>
+                            <td style={{ textAlign: 'center' }}>
+                              <button
+                                type="button"
+                                className="eye-action-button"
+                                title="Ver movimientos"
+                                aria-label="Ver movimientos"
+                                onClick={() => setVisitaDetalleModal(item.visita)}
+                              >
+                                <svg
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  width="18"
+                                  height="18"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="2"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                >
+                                  <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+                                  <circle cx="12" cy="12" r="3" />
+                                </svg>
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+
+                      {kpiModalActivo === 'unicas' &&
+                        datosModalKpi.filas.map((item) => (
+                          <tr key={item.clave}>
+                            <td>{item.nombre_completo}</td>
+                            <td>{item.rol}</td>
+                            <td>{item.dias}</td>
+                            <td>
+                              {item.totalEntradas} ent. / {item.totalSalidas} sal.
+                            </td>
+                            <td>
+                              <span className={item.estadoBadge.clase}>
+                                {item.estadoBadge.texto}
+                              </span>
+                            </td>
+                            <td style={{ textAlign: 'center' }}>
+                              <button
+                                type="button"
+                                className="eye-action-button"
+                                title="Ver último movimiento"
+                                aria-label="Ver último movimiento"
+                                onClick={() => setVisitaDetalleModal(item.visitaMasReciente)}
+                              >
+                                <svg
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  width="18"
+                                  height="18"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="2"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                >
+                                  <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+                                  <circle cx="12" cy="12" r="3" />
+                                </svg>
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+
+                      {kpiModalActivo === 'enEdificio' &&
+                        datosModalKpi.filas.map((item) => (
+                          <tr key={item.clave}>
+                            <td>{item.visita.nombre_completo}</td>
+                            <td>{item.visita.rol}</td>
+                            <td>{item.visita.hora_ingreso}</td>
+                            <td>
+                              {item.minutosDentro !== null
+                                ? formatearDuracionLegible(item.minutosDentro)
+                                : '-'}
+                            </td>
+                            <td style={{ textAlign: 'center' }}>
+                              <button
+                                type="button"
+                                className="eye-action-button"
+                                title="Ver movimientos"
+                                aria-label="Ver movimientos"
+                                onClick={() => setVisitaDetalleModal(item.visita)}
+                              >
+                                <svg
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  width="18"
+                                  height="18"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="2"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                >
+                                  <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+                                  <circle cx="12" cy="12" r="3" />
+                                </svg>
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+
+                      {kpiModalActivo === 'porFuera' &&
+                        datosModalKpi.filas.map((item) => (
+                          <tr key={item.clave}>
+                            <td>{item.visita.nombre_completo}</td>
+                            <td>{item.visita.rol}</td>
+                            <td>{item.visita.hora_ingreso || '-'}</td>
+                            <td>{item.visita.hora_salida || '-'}</td>
+                            <td style={{ textAlign: 'center' }}>
+                              <button
+                                type="button"
+                                className="eye-action-button"
+                                title="Ver movimientos"
+                                aria-label="Ver movimientos"
+                                onClick={() => setVisitaDetalleModal(item.visita)}
+                              >
+                                <svg
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  width="18"
+                                  height="18"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="2"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                >
+                                  <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+                                  <circle cx="12" cy="12" r="3" />
+                                </svg>
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+
+                      {kpiModalActivo === 'tiempoPromedio' &&
+                        datosModalKpi.filas.map((item) => (
+                          <tr key={item.clave}>
+                            <td>{item.visita.nombre_completo}</td>
+                            <td>{item.visita.rol}</td>
+                            <td>{formatearFechaLegible(item.visita.fecha_ingreso)}</td>
+                            <td>
+                              {item.visita.hora_ingreso} → {item.visita.hora_salida}
+                            </td>
+                            <td>
+                              <strong>{formatearDuracionLegible(item.duracionMinutos)}</strong>
+                            </td>
+                            <td style={{ textAlign: 'center' }}>
+                              <button
+                                type="button"
+                                className="eye-action-button"
+                                title="Ver movimientos"
+                                aria-label="Ver movimientos"
+                                onClick={() => setVisitaDetalleModal(item.visita)}
+                              >
+                                <svg
+                                  xmlns="http://www.w3.org/2000/svg"
+                                  width="18"
+                                  height="18"
+                                  viewBox="0 0 24 24"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="2"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                >
+                                  <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+                                  <circle cx="12" cy="12" r="3" />
+                                </svg>
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="apply-filters-button"
+                onClick={() => setKpiModalActivo(null)}
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
