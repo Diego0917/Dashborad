@@ -919,9 +919,9 @@ const Dashboard = () => {
                           <th>Cédula</th>
                           <th>EPS</th>
                           <th>ARL</th>
-                          <th>Teléfono</th>
                         </>
                       )}
+                      <th>Teléfono</th>
                       <th>Rol</th>
                       <th>Estado</th>
                       <th>Ver movimiento</th>
@@ -931,7 +931,7 @@ const Dashboard = () => {
                     {visitasPagina.length === 0 ? (
                       <tr>
                         <td
-                          colSpan={filtrosAplicados.filtroRol !== 'Empleado' ? 8 : 4}
+                          colSpan={filtrosAplicados.filtroRol !== 'Empleado' ? 8 : 5}
                           className="empty-cell"
                         >
                           No hay visitas para mostrar en el periodo seleccionado
@@ -963,9 +963,9 @@ const Dashboard = () => {
                                 </td>
                                 <td>{visita.eps || 'N/A'}</td>
                                 <td>{visita.arl || 'N/A'}</td>
-                                <td>{visita.telefono || '-'}</td>
                               </>
                             )}
+                            <td>{visita.telefono || '-'}</td>
                             <td>{visita.rol}</td>
                             <td>
                               <span className={estadoBadge.clase}>{estadoBadge.texto}</span>
