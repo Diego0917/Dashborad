@@ -365,7 +365,7 @@ const Invitacion = () => {
                     <span className="modal-detail-label">Estado de conexión con UniFi Access</span>
                     <p className="modal-detail-value">
                       {esQrSimulado
-                        ? '⚠️ Modo de prueba local (Sin conexión a 192.168.40.178:12445 — este QR no abrirá la puerta física hasta conectar a la red .40.x)'
+                        ? '⚠️ Modo de prueba local (Sin conexión a la consola UniFi Access — este QR no abrirá ninguna puerta física)'
                         : `✅ QR Oficial de UniFi Access (ID: ${qrGenerado.unifi_visitor_id}) — Listo para lector G3 Reader Pro`}
                     </p>
                   </div>

@@ -3,7 +3,7 @@ const { PNG } = require('pngjs');
 const nodemailer = require('nodemailer');
 
 const obtenerConfiguracionUnifi = () => {
-  const host = (process.env.UNIFI_HOST || '192.168.40.178').trim();
+  const host = (process.env.UNIFI_HOST || 'localhost').trim();
   const port = (process.env.UNIFI_PORT || '12445').trim();
   const token = (process.env.UNIFI_TOKEN || '').trim();
   const verifySsl =
@@ -11,7 +11,7 @@ const obtenerConfiguracionUnifi = () => {
   const puertaDefecto = (process.env.UNIFI_PUERTA_DEFECTO || '').trim();
   const puertaPrincipalId = (process.env.UNIFI_PUERTA_PRINCIPAL_ID || '').trim();
   const puertaPrincipalNombre = (
-    process.env.UNIFI_PUERTA_PRINCIPAL_NOMBRE || 'Puerta Ppal LIRA'
+    process.env.UNIFI_PUERTA_PRINCIPAL_NOMBRE || ''
   ).trim();
   const puertasVisitanteEnv = String(process.env.UNIFI_PUERTAS_VISITANTE || '')
     .split(',')
@@ -257,7 +257,7 @@ const anadirQuietZonePng = (pngBuffer, margen = 48, escala = 2) => {
 
 /**
  * Genera una matriz PNG tipo QR determinística para pruebas locales cuando la consola
- * UniFi Access (192.168.40.178:12445) no es alcanzable desde la red actual.
+ * UniFi Access no es alcanzable desde la red actual.
  */
 const generarPngQrSimulado = (semillaTexto) => {
   const modulos = 25;
