@@ -488,7 +488,7 @@ const registrarSalidaManual = async (pool, { idRegistro }) => {
  */
 const guardarVisitaConQrEnBd = async (
   pool,
-  { datosPersona, motivo, visitanteUnifi, limiteUsos, qrBase64 }
+  { datosPersona, motivo, visitanteUnifi, limiteUsos, qrBase64, idSolicitudTelegram = null }
 ) => {
   const conexion = await pool.getConnection();
   try {
@@ -542,6 +542,20 @@ const guardarVisitaConQrEnBd = async (
         qrBase64,
       ]
     );
+
+    if (idSolicitudTelegram) {
+      const [resSol] = await conexion.query(
+        `UPDATE solicitudes_visita_telegram
+         SET estado = 'COMPLETADA', id_registro = ?
+         WHERE id_solicitud = ? AND estado = 'APROBADA'`,
+        [idRegistro, idSolicitudTelegram]
+      );
+      if (!resSol || resSol.affectedRows === 0) {
+        const errUsado = new Error('Este enlace de invitación ya fue utilizado.');
+        errUsado.codigoHttp = 409;
+        throw errUsado;
+      }
+    }
 
     await conexion.commit();
     return {

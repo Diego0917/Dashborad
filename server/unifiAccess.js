@@ -29,7 +29,7 @@ const obtenerConfiguracionUnifi = () => {
     process.env.UNIFI_QR_COOLDOWN_SEGUNDOS !== undefined &&
     process.env.UNIFI_QR_COOLDOWN_SEGUNDOS !== ''
       ? Math.max(Number(process.env.UNIFI_QR_COOLDOWN_SEGUNDOS) || 0, 0)
-      : 30;
+      : 10;
 
   return {
     baseUrl: `https://${host}:${port}/api/v1/developer`,
@@ -819,14 +819,14 @@ const evaluarEventosQrConAntirrebote = ({
   const registrosVistos = [];
   const idsVistos = new Set();
   let totalAccesosConcedidos = 0;
-  let ultimoTsContadoMs = 0;
+  const ultimoTsPorPuerta = new Map();
 
   for (const item of listaPrevia) {
     if (typeof item === 'string' && item.trim()) {
       const id = item.trim();
       if (!idsVistos.has(id)) {
         idsVistos.add(id);
-        registrosVistos.push({ id, tsMs: 0, contado: true });
+        registrosVistos.push({ id, tsMs: 0, puerta: '', contado: true });
         totalAccesosConcedidos += 1;
       }
     } else if (item && typeof item === 'object' && item.id) {
@@ -834,11 +834,15 @@ const evaluarEventosQrConAntirrebote = ({
       if (id && !idsVistos.has(id)) {
         const contado = item.contado !== false;
         const tsMs = Number(item.tsMs) || 0;
+        const puerta = String(item.puerta || '').trim();
         idsVistos.add(id);
-        registrosVistos.push({ id, tsMs, contado });
+        registrosVistos.push({ id, tsMs, puerta, contado });
         if (contado) {
           totalAccesosConcedidos += 1;
-          if (tsMs > ultimoTsContadoMs) ultimoTsContadoMs = tsMs;
+          const clavePuerta = puerta || '__global__';
+          if (tsMs > (ultimoTsPorPuerta.get(clavePuerta) || 0)) {
+            ultimoTsPorPuerta.set(clavePuerta, tsMs);
+          }
         }
       }
     }
@@ -857,28 +861,32 @@ const evaluarEventosQrConAntirrebote = ({
     if (!esAccesoConcedidoUnifi(ev, visitorId)) continue;
 
     const tsEventoMs = obtenerTimestampMsEventoUnifi(ev) || Date.now();
+    const infoPuerta = obtenerInfoPuertaDeEventoUnifi(ev);
+    const puertaNombre = infoPuerta.nombre;
+    const clavePuerta = infoPuerta.id || puertaNombre || '__global__';
+    const ultimoTsEnMismaPuerta = ultimoTsPorPuerta.get(clavePuerta) || 0;
+
     const dentroDeCooldown =
       cooldownMs > 0 &&
-      ultimoTsContadoMs > 0 &&
-      tsEventoMs >= ultimoTsContadoMs &&
-      tsEventoMs - ultimoTsContadoMs < cooldownMs;
+      ultimoTsEnMismaPuerta > 0 &&
+      tsEventoMs >= ultimoTsEnMismaPuerta &&
+      tsEventoMs - ultimoTsEnMismaPuerta < cooldownMs;
 
     idsVistos.add(evId);
     huboCambioEventos = true;
-    const puertaNombre = obtenerPuertaDeEventoUnifi(ev);
 
     if (dentroDeCooldown) {
-      const deltaSeg = ((tsEventoMs - ultimoTsContadoMs) / 1000).toFixed(1);
-      registrosVistos.push({ id: evId, tsMs: tsEventoMs, contado: false });
+      const deltaSeg = ((tsEventoMs - ultimoTsEnMismaPuerta) / 1000).toFixed(1);
+      registrosVistos.push({ id: evId, tsMs: tsEventoMs, puerta: clavePuerta, contado: false });
       logsConsola.push(
-        `[Monitor QR] Lectura ignorada por antirrebote (${deltaSeg}s < ${cooldownSegundos}s) para visitante ${visitorId} en '${puertaNombre}'`
+        `[Monitor QR] Lectura ignorada por antirrebote en '${puertaNombre}' (${deltaSeg}s < ${cooldownSegundos}s) para visitante ${visitorId}`
       );
       continue;
     }
 
     totalAccesosConcedidos += 1;
-    ultimoTsContadoMs = tsEventoMs;
-    registrosVistos.push({ id: evId, tsMs: tsEventoMs, contado: true });
+    ultimoTsPorPuerta.set(clavePuerta, tsEventoMs);
+    registrosVistos.push({ id: evId, tsMs: tsEventoMs, puerta: clavePuerta, contado: true });
 
     if (totalAccesosConcedidos >= 2 && esPuertaPrincipalUnifi(ev)) {
       huboSalidaPuertaPrincipal = true;
