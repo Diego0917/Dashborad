@@ -51,11 +51,6 @@ const ETIQUETAS_PERIODO = {
 
 const INTERVALO_ACTUALIZACION_MS = 300000; // 5 minutos
 
-// Bandera para mostrar u ocultar temporalmente el botón "+ Nueva Invitación / QR"
-// Para reactivarlo: definir VITE_MOSTRAR_INVITACION_QR=true o cambiar 'false' por 'true'
-const MOSTRAR_NUEVA_INVITACION_QR =
-  String(import.meta.env.VITE_MOSTRAR_INVITACION_QR || 'false').toLowerCase() === 'true';
-
 const construirParametrosFiltroServidor = (filtros) => {
   const rangoFechas = obtenerRangoFechas(
     filtros.periodo,
@@ -768,15 +763,13 @@ const Dashboard = () => {
         <h1>Dashboard - Lira Seguridad</h1>
         <div className="header-actions">
           <span>Bienvenido, {usuario?.nombreUsuario}</span>
-          {MOSTRAR_NUEVA_INVITACION_QR && (
-            <button
-              type="button"
-              onClick={() => navegar('/invitacion')}
-              className="new-invitation-button"
-            >
-              + Nueva Invitación / QR
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => navegar('/invitacion')}
+            className="new-invitation-button"
+          >
+            + Nueva Invitación / QR
+          </button>
           <button
             type="button"
             onClick={manejarSincronizarEmpleados}

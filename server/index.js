@@ -35,12 +35,6 @@ const {
 } = require('./eventosRostro');
 const { inicializarBaseDatosConReintentos } = require('./migraciones');
 const { crearLimitadorLogin } = require('./limitadorLogin');
-const { iniciarMonitorTelegram } = require('./flujoTelegram');
-const {
-  telegramConfigurado,
-  enviarMensajeTelegram,
-  enviarFotoQrTelegram,
-} = require('./telegramApi');
 
 // Carga automática de server/.env si existe (soportado nativamente en Node >= 20.12)
 const rutaArchivoEnv = path.join(__dirname, '.env');
@@ -1414,208 +1408,8 @@ const procesarCicloMonitoreoQr = async () => {
   }
 };
 
-// ── RUTAS PÚBLICAS DE INVITACIÓN POR TELEGRAM (protegidas por token único temporal) ──
-
-aplicacion.get('/api/invitaciones-publicas/:token', async (solicitud, respuesta) => {
-  try {
-    const token = String(solicitud.params.token || '').trim();
-    if (!token || token.length < 16) {
-      return respuesta.status(404).json({ error: 'Enlace de invitación inválido.' });
-    }
-
-    const [filas] = await poolBaseDatos.query(
-      `SELECT id_solicitud, estado, nombre_anfitrion, motivo, nombre_telegram_visitante,
-              token_expira_en, (token_expira_en IS NOT NULL AND token_expira_en < NOW()) AS expirado
-       FROM solicitudes_visita_telegram
-       WHERE token_formulario = ?
-       LIMIT 1`,
-      [token]
-    );
-
-    if (filas.length === 0) {
-      return respuesta.status(404).json({ error: 'Enlace de invitación no encontrado.' });
-    }
-
-    const sol = filas[0];
-    if (sol.estado === 'COMPLETADA') {
-      return respuesta.status(410).json({
-        error: 'Este enlace ya fue utilizado y el código QR ya fue generado.',
-      });
-    }
-    if (sol.estado !== 'APROBADA' || Number(sol.expirado) === 1) {
-      return respuesta.status(410).json({
-        error: 'Este enlace de invitación ha expirado. Solicita uno nuevo en Telegram.',
-      });
-    }
-
-    return respuesta.json({
-      nombre_anfitrion: sol.nombre_anfitrion,
-      motivo: sol.motivo,
-      nombre_sugerido: sol.nombre_telegram_visitante || '',
-      expira_en: sol.token_expira_en,
-    });
-  } catch (errorToken) {
-    console.error('Error al consultar invitación pública:', errorToken);
-    return respuesta.status(500).json({ error: 'Error al validar el enlace de invitación.' });
-  }
-});
-
-aplicacion.post('/api/invitaciones-publicas/:token/completar', async (solicitud, respuesta) => {
-  try {
-    const token = String(solicitud.params.token || '').trim();
-    if (!token || token.length < 16) {
-      return respuesta.status(404).json({ error: 'Enlace de invitación inválido.' });
-    }
-
-    const { cedula, nombre_completo, id_rol = 1, telefono = '', eps = '', arl = '' } =
-      solicitud.body || {};
-
-    const cedulaLimpia = String(cedula ?? '').trim();
-    const nombreLimpio = String(nombre_completo ?? '').trim();
-    const telefonoLimpio = String(telefono ?? '').trim();
-    const epsLimpia = String(eps ?? '').trim();
-    const arlLimpia = String(arl ?? '').trim();
-    const idRolSeguro = Number(id_rol) === 3 ? 3 : 1;
-
-    if (!cedulaLimpia || !nombreLimpio || !telefonoLimpio || !epsLimpia || !arlLimpia) {
-      return respuesta.status(400).json({
-        error: 'Todos los campos (cédula, nombre completo, celular, EPS y ARL) son obligatorios.',
-      });
-    }
-
-    const [filas] = await poolBaseDatos.query(
-      `SELECT *, (token_expira_en IS NOT NULL AND token_expira_en < NOW()) AS expirado
-       FROM solicitudes_visita_telegram
-       WHERE token_formulario = ?
-       LIMIT 1`,
-      [token]
-    );
-
-    if (filas.length === 0) {
-      return respuesta.status(404).json({ error: 'Enlace de invitación no encontrado.' });
-    }
-
-    const sol = filas[0];
-    if (sol.estado === 'COMPLETADA') {
-      return respuesta.status(409).json({
-        error: 'Este enlace ya fue utilizado y el código QR ya fue generado.',
-      });
-    }
-    if (sol.estado !== 'APROBADA' || Number(sol.expirado) === 1) {
-      return respuesta.status(410).json({
-        error: 'Este enlace de invitación ha expirado. Solicita uno nuevo en Telegram.',
-      });
-    }
-
-    const configUnifi = obtenerConfiguracionUnifi();
-    const puertasSeleccionadas = configUnifi.puertasVisitante;
-    if (puertasSeleccionadas.length < 2) {
-      return respuesta.status(500).json({
-        error:
-          'No hay suficientes puertas configuradas en el servidor (UNIFI_PUERTAS_VISITANTE) para generar el QR.',
-      });
-    }
-
-    const { nombres, apellidos } = dividirNombreCompleto(nombreLimpio);
-    const duracionVigencia = Math.max(
-      Number(process.env.TELEGRAM_QR_VENTANA_SEGUNDOS) || 7200,
-      300
-    );
-    const limiteUsos = configUnifi.maxAccesos || 6;
-    const motivoRegistro = sol.motivo
-      ? `${sol.motivo} (Anfitrión: ${sol.nombre_anfitrion})`
-      : `Visita a ${sol.nombre_anfitrion}`;
-
-    const visitanteUnifi = await crearVisitanteUnifi({
-      nombres,
-      apellidos,
-      motivo: motivoRegistro,
-      telefono: telefonoLimpio,
-      doorIds: puertasSeleccionadas,
-      ventanaSegundos: duracionVigencia,
-    });
-
-    let qrGenerado;
-    let idRegistro;
-    let idQr;
-    try {
-      qrGenerado = await generarQrVisitanteUnifi(visitanteUnifi.visitorId);
-      const guardado = await guardarVisitaConQrEnBd(poolBaseDatos, {
-        datosPersona: {
-          cedula: cedulaLimpia,
-          nombre_completo: nombreLimpio,
-          telefono: telefonoLimpio,
-          eps: epsLimpia,
-          arl: arlLimpia,
-          id_rol: idRolSeguro,
-        },
-        motivo: motivoRegistro,
-        visitanteUnifi,
-        limiteUsos,
-        qrBase64: qrGenerado.base64DataUrl,
-        idSolicitudTelegram: sol.id_solicitud,
-      });
-      idRegistro = guardado.idRegistro;
-      idQr = guardado.idQr;
-    } catch (errorPosteriorAUnifi) {
-      await eliminarVisitanteUnifi(visitanteUnifi.visitorId, true).catch(() => {});
-      throw errorPosteriorAUnifi;
-    }
-
-    let telegramEnviado = false;
-    if (telegramConfigurado() && sol.chat_id_visitante && !visitanteUnifi.simulado) {
-      try {
-        const horaFin = new Date(Number(visitanteUnifi.finTimestamp) * 1000).toLocaleTimeString(
-          'es-CO',
-          { hour: '2-digit', minute: '2-digit' }
-        );
-        await enviarFotoQrTelegram(
-          sol.chat_id_visitante,
-          qrGenerado.bufferPng,
-          `🎫 Pase de ingreso QR — ${nombreLimpio}\n` +
-            `👤 Anfitrión: ${sol.nombre_anfitrion}\n` +
-            `⏰ Válido hasta: ${horaFin} (${limiteUsos} accesos)\n` +
-            'Presenta este código frente al lector de entrada.'
-        );
-        telegramEnviado = true;
-      } catch (errTgFoto) {
-        console.warn('[Telegram Bot] No se pudo enviar la foto del QR al visitante:', errTgFoto.message);
-      }
-
-      if (sol.chat_id_anfitrion) {
-        await enviarMensajeTelegram(
-          sol.chat_id_anfitrion,
-          `🎫 ${nombreLimpio} (C.C. ${cedulaLimpia}) completó su registro y ya recibió su código QR de ingreso.`
-        ).catch(() => {});
-      }
-    }
-
-    return respuesta.status(201).json({
-      mensaje: 'Registro completado y código QR generado exitosamente',
-      id_registro: idRegistro,
-      id_qr: idQr,
-      cedula: cedulaLimpia,
-      nombre_completo: nombreLimpio,
-      motivo: sol.motivo || 'Visita autorizada',
-      fin_timestamp: visitanteUnifi.finTimestamp,
-      max_usos: limiteUsos,
-      qr_base64: qrGenerado.base64DataUrl,
-      simulado: Boolean(visitanteUnifi.simulado),
-      telegram: { enviado: telegramEnviado },
-    });
-  } catch (errorCompletar) {
-    console.error('Error al completar registro público de visitante:', errorCompletar);
-    return respuesta.status(errorCompletar.codigoHttp || 502).json({
-      error:
-        errorCompletar.message ||
-        'No se pudo generar el código QR en la consola UniFi Access.',
-    });
-  }
-});
-
 const { pollIntervalMs } = obtenerConfiguracionUnifi();
 let intervaloMonitorQr = null;
-let detenerMonitorTelegram = null;
 let servidorHttp = null;
 
 const iniciarServidor = async () => {
@@ -1633,7 +1427,6 @@ const iniciarServidor = async () => {
     procesarCicloMonitoreoQr,
     Math.max(pollIntervalMs, 3000)
   );
-  detenerMonitorTelegram = iniciarMonitorTelegram(poolBaseDatos);
 
   servidorHttp = aplicacion.listen(puertoServidor, () => {
     console.log(`Servidor backend corriendo en http://localhost:${puertoServidor}`);
@@ -1656,9 +1449,6 @@ iniciarServidor();
 const cerrarServidor = async () => {
   if (intervaloMonitorQr) {
     clearInterval(intervaloMonitorQr);
-  }
-  if (typeof detenerMonitorTelegram === 'function') {
-    detenerMonitorTelegram();
   }
   const finalizarPool = async () => {
     try {

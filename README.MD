@@ -75,16 +75,6 @@ cp server/.env.example server/.env
 | `SMTP_PASS` | Contraseña o clave de aplicación SMTP. |
 | `SMTP_FROM` | Remitente de los correos enviados. |
 
-#### Bot de Telegram (Invitaciones de visitantes)
-
-| Variable | Descripción |
-|---|---|
-| `URL_PUBLICA_APP` | URL base accesible desde el celular del visitante para abrir el formulario `/registro-visita/<token>`. |
-| `TELEGRAM_BOT_TOKEN` | Token del bot obtenido con `@BotFather` (si queda vacío, el bot no se inicia). |
-| `TELEGRAM_GRUPO_APROBACIONES_ID` | ID del grupo de Telegram donde llegan las solicitudes de aprobación para todos los empleados sin necesidad de vinculación individual (puedes obtenerlo enviando `/chatid` en el grupo). |
-| `TELEGRAM_FORM_EXPIRACION_MIN` | Minutos de validez del enlace único del formulario tras aprobar el anfitrión (por defecto `30`). |
-| `TELEGRAM_QR_VENTANA_SEGUNDOS` | Vigencia del código QR generado desde el formulario público en segundos (por defecto `7200`). |
-
 ---
 
 ## 2. Ejecución con Docker Compose

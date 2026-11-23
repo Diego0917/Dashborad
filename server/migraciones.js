@@ -91,46 +91,6 @@ const MIGRACIONES = [
       );
     },
   },
-  {
-    id: '002_flujo_telegram_visitas',
-    aplicar: async (pool) => {
-      await ejecutarAlterIdempotente(
-        pool,
-        'ALTER TABLE personas ADD COLUMN telegram_chat_id VARCHAR(64) NULL UNIQUE'
-      );
-
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS solicitudes_visita_telegram (
-          id_solicitud INT AUTO_INCREMENT PRIMARY KEY,
-          chat_id_visitante VARCHAR(64) NOT NULL,
-          nombre_telegram_visitante VARCHAR(120) NULL,
-          estado ENUM(
-            'ESPERANDO_ANFITRION',
-            'ELIGIENDO_ANFITRION',
-            'ESPERANDO_MOTIVO',
-            'PENDIENTE_APROBACION',
-            'APROBADA',
-            'RECHAZADA',
-            'COMPLETADA',
-            'EXPIRADA'
-          ) NOT NULL DEFAULT 'ESPERANDO_ANFITRION',
-          candidatos_json TEXT NULL,
-          cedula_anfitrion VARCHAR(20) NULL,
-          nombre_anfitrion VARCHAR(120) NULL,
-          chat_id_anfitrion VARCHAR(64) NULL,
-          motivo VARCHAR(255) NULL,
-          token_formulario VARCHAR(64) NULL UNIQUE,
-          token_expira_en DATETIME NULL,
-          id_registro INT NULL,
-          creado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          actualizado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-          INDEX idx_sol_tg_visitante_estado (chat_id_visitante, estado),
-          INDEX idx_sol_tg_anfitrion_estado (chat_id_anfitrion, estado),
-          INDEX idx_sol_tg_token (token_formulario)
-        )
-      `);
-    },
-  },
 ];
 
 /**
