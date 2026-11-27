@@ -15,9 +15,6 @@ const LONGITUD_MINIMA_ADMIN = 8;
 const esProduccion = () =>
   String(process.env.NODE_ENV || '').trim().toLowerCase() === 'production';
 
-/**
- * Devuelve el motivo por el que un secreto no es aceptable, o null si es válido.
- */
 const motivoInvalido = (valor, longitudMinima) => {
   if (!valor) return 'no está definida';
   if (VALORES_CONOCIDOS.has(valor)) return 'usa un valor por defecto conocido';

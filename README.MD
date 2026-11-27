@@ -75,15 +75,23 @@ cp server/.env.example server/.env
 | `SMTP_PASS` | Contraseña o clave de aplicación SMTP. |
 | `SMTP_FROM` | Remitente de los correos enviados. |
 
-#### Bot de Telegram (Invitaciones de visitantes)
+#### Meta WhatsApp Cloud API (Invitaciones de visitantes)
 
 | Variable | Descripción |
 |---|---|
 | `URL_PUBLICA_APP` | URL base accesible desde el celular del visitante para abrir el formulario `/registro-visita/<token>`. |
-| `TELEGRAM_BOT_TOKEN` | Token del bot obtenido con `@BotFather` (si queda vacío, el bot no se inicia). |
-| `TELEGRAM_GRUPO_APROBACIONES_ID` | ID del grupo de Telegram donde llegan las solicitudes de aprobación para todos los empleados sin necesidad de vinculación individual (puedes obtenerlo enviando `/chatid` en el grupo). |
-| `TELEGRAM_FORM_EXPIRACION_MIN` | Minutos de validez del enlace único del formulario tras aprobar el anfitrión (por defecto `30`). |
-| `TELEGRAM_QR_VENTANA_SEGUNDOS` | Vigencia del código QR generado desde el formulario público en segundos (por defecto `7200`). |
+| `WHATSAPP_API_VERSION` | Versión de Meta Graph API (por defecto `v22.0`). |
+| `WHATSAPP_TOKEN` | Token de acceso de Meta WhatsApp Cloud API (temporal de prueba o permanente). |
+| `WHATSAPP_PHONE_NUMBER_ID` | ID del número de teléfono de WhatsApp configurado en Meta for Developers. |
+| `WHATSAPP_VERIFY_TOKEN` | Cadena secreta usada en `GET /api/whatsapp/webhook` para verificar el webhook ante Meta. |
+| `WHATSAPP_APP_SECRET` | Opcional: secreto de la app de Meta para validar la firma `X-Hub-Signature-256`. |
+| `WHATSAPP_CODIGO_PAIS_DEFECTO` | Código de país aplicado a teléfonos de 10 dígitos (por defecto `57`). |
+| `WHATSAPP_TELEFONO_RESPALDO` | Opcional: teléfono de respaldo para recibir aprobaciones si el empleado no tiene celular registrado. |
+| `WHATSAPP_ADMINS_TELEFONOS` | Opcional: teléfonos de administradores/recepción autorizados a aprobar cualquier visita (separados por coma). |
+| `WHATSAPP_FORM_EXPIRACION_MIN` | Minutos de validez del enlace único del formulario tras aprobar el anfitrión (por defecto `30`). |
+| `WHATSAPP_ANFITRION_FORM_EXPIRACION_HORAS` | Horas de validez del enlace preaprobado cuando un empleado anfitrión genera la invitación (por defecto `24`). |
+| `WHATSAPP_QR_VENTANA_SEGUNDOS` | Vigencia del código QR generado desde el formulario público en segundos (por defecto `7200`). |
+| `WHATSAPP_TEMPLATE_QR` | Opcional: nombre de plantilla de utilidad aprobada en Meta para notificar a invitados programados fuera de la ventana de 24h. |
 
 ---
 

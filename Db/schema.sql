@@ -16,7 +16,6 @@ CREATE TABLE personas (
     arl VARCHAR(50),
     id_rol INT NOT NULL,
     unifi_user_id VARCHAR(64) NULL UNIQUE,
-    telegram_chat_id VARCHAR(64) NULL UNIQUE,
     INDEX idx_personas_rol (id_rol),
     INDEX idx_personas_nombre (nombre_completo),
     CONSTRAINT fk_persona_rol FOREIGN KEY (id_rol) REFERENCES roles(id_rol)
@@ -80,16 +79,20 @@ CREATE TABLE IF NOT EXISTS migraciones_schema (
     ejecutada_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- Solicitudes de visita gestionadas por el Bot de Telegram (aprobación del anfitrión + formulario público)
-CREATE TABLE IF NOT EXISTS solicitudes_visita_telegram (
+-- Solicitudes de visita gestionadas por Meta WhatsApp Cloud API (aprobación del anfitrión + formulario público)
+CREATE TABLE IF NOT EXISTS solicitudes_visita_whatsapp (
     id_solicitud INT AUTO_INCREMENT PRIMARY KEY,
-    chat_id_visitante VARCHAR(64) NOT NULL,
-    nombre_telegram_visitante VARCHAR(120) NULL,
+    origen ENUM('VISITANTE', 'ANFITRION') NOT NULL DEFAULT 'VISITANTE',
+    rol_invitado TINYINT NOT NULL DEFAULT 1,
+    telefono_visitante VARCHAR(32) NULL,
+    nombre_whatsapp_visitante VARCHAR(120) NULL,
     estado ENUM(
         'ESPERANDO_ANFITRION',
         'ELIGIENDO_ANFITRION',
         'ESPERANDO_MOTIVO',
         'PENDIENTE_APROBACION',
+        'ANFITRION_ESPERANDO_NOMBRE',
+        'ANFITRION_ESPERANDO_MOTIVO',
         'APROBADA',
         'RECHAZADA',
         'COMPLETADA',
@@ -98,15 +101,15 @@ CREATE TABLE IF NOT EXISTS solicitudes_visita_telegram (
     candidatos_json TEXT NULL,
     cedula_anfitrion VARCHAR(20) NULL,
     nombre_anfitrion VARCHAR(120) NULL,
-    chat_id_anfitrion VARCHAR(64) NULL,
+    telefono_anfitrion VARCHAR(32) NULL,
     motivo VARCHAR(255) NULL,
     token_formulario VARCHAR(64) NULL UNIQUE,
     token_expira_en DATETIME NULL,
     id_registro INT NULL,
     creado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     actualizado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_sol_tg_visitante_estado (chat_id_visitante, estado),
-    INDEX idx_sol_tg_anfitrion_estado (chat_id_anfitrion, estado),
-    INDEX idx_sol_tg_token (token_formulario)
+    INDEX idx_sol_wa_visitante_estado (telefono_visitante, estado),
+    INDEX idx_sol_wa_anfitrion_estado (telefono_anfitrion, estado),
+    INDEX idx_sol_wa_token (token_formulario)
 );
 

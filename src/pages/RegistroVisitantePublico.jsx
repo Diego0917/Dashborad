@@ -35,12 +35,12 @@ const RegistroVisitantePublico = () => {
         );
         if (!cancelado) {
           setInfoInvitacion(resp.data);
-          if (resp.data?.nombre_sugerido) {
-            setFormulario((prev) => ({
-              ...prev,
-              nombre_completo: prev.nombre_completo || resp.data.nombre_sugerido,
-            }));
-          }
+          setFormulario((prev) => ({
+            ...prev,
+            id_rol: String(resp.data?.rol_invitado || prev.id_rol || '1'),
+            nombre_completo: prev.nombre_completo || resp.data?.nombre_sugerido || '',
+            telefono: prev.telefono || resp.data?.telefono_sugerido || '',
+          }));
         }
       } catch (err) {
         if (!cancelado) {
@@ -76,6 +76,12 @@ const RegistroVisitantePublico = () => {
       !formulario.arl.trim()
     ) {
       setErrorEnvio('Todos los campos marcados con * son obligatorios.');
+      return;
+    }
+
+    const soloDigitosTel = formulario.telefono.replace(/\D/g, '');
+    if (soloDigitosTel.length < 10) {
+      setErrorEnvio('Ingresa un número de WhatsApp (celular) válido de al menos 10 dígitos.');
       return;
     }
 
@@ -118,16 +124,16 @@ const RegistroVisitantePublico = () => {
           <section className="invitacion-card">
             <div className="error-banner">{errorToken}</div>
             <p className="stats-subtitle">
-              Si necesitas un nuevo enlace, vuelve al chat de Telegram y escribe <strong>/start</strong>.
+              Si necesitas un nuevo enlace, vuelve al chat de WhatsApp y escribe <strong>Hola</strong>.
             </p>
           </section>
         ) : qrGenerado ? (
           <section className="invitacion-card">
             <h2 className="stats-title">¡Tu código QR de ingreso está listo!</h2>
             <div className="success-banner" style={{ marginTop: '0.75rem' }}>
-              {qrGenerado.telegram?.enviado
-                ? 'También te enviamos este código QR directamente a tu chat de Telegram.'
-                : 'Presenta este código QR en el lector de entrada del edificio.'}
+              {qrGenerado.whatsapp?.enviado
+                ? 'También te enviamos este código QR directamente a tu chat de WhatsApp.'
+                : 'Guarda o presenta este código QR en el lector de entrada del edificio (ya notificamos a tu anfitrión).'}
             </div>
 
             <div className="invitacion-qr-box">
@@ -182,8 +188,12 @@ const RegistroVisitantePublico = () => {
           <section className="invitacion-card">
             <h2 className="stats-title">Completa tus datos para generar tu pase QR</h2>
             <p className="stats-subtitle" style={{ marginBottom: '1rem' }}>
-              Visita aprobada por <strong>{infoInvitacion?.nombre_anfitrion}</strong> · Motivo:{' '}
-              <strong>{infoInvitacion?.motivo}</strong>
+              {infoInvitacion?.origen === 'ANFITRION'
+                ? 'Invitación programada por '
+                : 'Visita aprobada por '}
+              <strong>{infoInvitacion?.nombre_anfitrion}</strong> · Tipo:{' '}
+              <strong>{Number(infoInvitacion?.rol_invitado) === 3 ? 'Proveedor' : 'Visitante'}</strong>{' '}
+              · Motivo: <strong>{infoInvitacion?.motivo}</strong>
             </p>
 
             {errorEnvio && <div className="error-banner">{errorEnvio}</div>}
@@ -226,7 +236,7 @@ const RegistroVisitantePublico = () => {
               </div>
 
               <div className="filter-group">
-                <label htmlFor="pub-telefono">Celular *</label>
+                <label htmlFor="pub-telefono">Número de WhatsApp (Celular) *</label>
                 <input
                   id="pub-telefono"
                   type="tel"
