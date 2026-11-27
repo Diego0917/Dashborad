@@ -128,7 +128,7 @@ const registrarEventoRostroEmpleado = async (
     );
 
     if (registroDia.length === 0) {
-      // 1.ª lectura del día
+      // Primera lectura del día
       const esSalidaDirecta = enPuertaPrincipal && direccion === 'exit';
       const movimientosIniciales = JSON.stringify([
         {
@@ -258,7 +258,7 @@ const registrarEventoRostroEmpleado = async (
           mensajeLog = `[Monitor Rostro UniFi] Entrada #${nuevasEntradas} (${horaEvento}) en '${puertaNombre}' acumulada para ${empleado.nombre_completo}`;
         }
       } else {
-        // Puerta interna (ej. Gestión Humana): no altera hora_salida ni contadores del edificio
+        // Puerta interna no altera hora_salida ni contadores del edificio
         movimientos.push({ tipo: 'ACCESO_INTERNO', hora: horaEvento, puerta: puertaNombre });
 
         await conexion.query(
@@ -488,7 +488,15 @@ const registrarSalidaManual = async (pool, { idRegistro }) => {
  */
 const guardarVisitaConQrEnBd = async (
   pool,
-  { datosPersona, motivo, visitanteUnifi, limiteUsos, qrBase64 }
+  {
+    datosPersona,
+    motivo,
+    visitanteUnifi,
+    limiteUsos,
+    qrBase64,
+    idSolicitudWhatsapp = null,
+    telefonoWhatsappVisitante = null,
+  }
 ) => {
   const conexion = await pool.getConnection();
   try {
@@ -542,6 +550,28 @@ const guardarVisitaConQrEnBd = async (
         qrBase64,
       ]
     );
+
+    if (idSolicitudWhatsapp) {
+      const [resSol] = await conexion.query(
+        `UPDATE solicitudes_visita_whatsapp
+         SET estado = 'COMPLETADA',
+             id_registro = ?,
+             telefono_visitante = COALESCE(NULLIF(telefono_visitante, ''), ?),
+             nombre_whatsapp_visitante = COALESCE(NULLIF(nombre_whatsapp_visitante, ''), ?)
+         WHERE id_solicitud = ? AND estado = 'APROBADA'`,
+        [
+          idRegistro,
+          telefonoWhatsappVisitante || datosPersona.telefono || null,
+          datosPersona.nombre_completo || null,
+          idSolicitudWhatsapp,
+        ]
+      );
+      if (!resSol || resSol.affectedRows === 0) {
+        const errUsado = new Error('Este enlace de invitación ya fue utilizado.');
+        errUsado.codigoHttp = 409;
+        throw errUsado;
+      }
+    }
 
     await conexion.commit();
     return {

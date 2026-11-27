@@ -35,6 +35,17 @@ const {
 } = require('./eventosRostro');
 const { inicializarBaseDatosConReintentos } = require('./migraciones');
 const { crearLimitadorLogin } = require('./limitadorLogin');
+const { procesarWebhookWhatsapp } = require('./flujoWhatsapp');
+const {
+  whatsappConfigurado,
+  obtenerVerifyTokenWhatsapp,
+  normalizarUltimos10Digitos,
+  normalizarTelefonoWhatsapp,
+  enviarTextoWhatsapp,
+  enviarImagenQrWhatsapp,
+  enviarPlantillaWhatsapp,
+  verificarFirmaMeta,
+} = require('./whatsappApi');
 
 // Carga automática de server/.env si existe (soportado nativamente en Node >= 20.12)
 const rutaArchivoEnv = path.join(__dirname, '.env');
@@ -81,7 +92,13 @@ aplicacion.use(
   })
 );
 
-aplicacion.use(express.json());
+aplicacion.use(
+  express.json({
+    verify: (solicitud, _respuesta, buf) => {
+      solicitud.rawBody = buf;
+    },
+  })
+);
 
 // Configura el pool de conexiones a tu base de datos en XAMPP / MySQL
 const poolBaseDatos = mysql.createPool({
@@ -1408,6 +1425,292 @@ const procesarCicloMonitoreoQr = async () => {
   }
 };
 
+// ── WEBHOOK DE META WHATSAPP CLOUD API ──
+
+aplicacion.get('/api/whatsapp/webhook', (solicitud, respuesta) => {
+  const modo = solicitud.query['hub.mode'];
+  const tokenRecibido = solicitud.query['hub.verify_token'];
+  const reto = solicitud.query['hub.challenge'];
+  const tokenEsperado = obtenerVerifyTokenWhatsapp();
+
+  if (modo === 'subscribe' && tokenEsperado && tokenRecibido === tokenEsperado) {
+    console.log('[WhatsApp Webhook] Verificación de webhook de Meta completada exitosamente.');
+    return respuesta.status(200).send(String(reto || ''));
+  }
+
+  console.warn('[WhatsApp Webhook] Falló verificación de webhook (verify_token inválido o no configurado).');
+  return respuesta.sendStatus(403);
+});
+
+aplicacion.post('/api/whatsapp/webhook', (solicitud, respuesta) => {
+  const firmaHeader = solicitud.headers['x-hub-signature-256'];
+  if (!verificarFirmaMeta(solicitud.rawBody, firmaHeader)) {
+    console.warn('[WhatsApp Webhook] Firma X-Hub-Signature-256 inválida. Solicitud rechazada.');
+    return respuesta.sendStatus(401);
+  }
+
+  const mensajesEntrantes =
+    solicitud.body?.entry?.[0]?.changes?.[0]?.value?.messages?.length || 0;
+  console.log(
+    `[WhatsApp Webhook] POST recibido (mensajes=${mensajesEntrantes}, campo=${solicitud.body?.entry?.[0]?.changes?.[0]?.field || 'desconocido'})`
+  );
+
+  // Responder 200 OK de inmediato para que Meta no reintente la entrega
+  respuesta.sendStatus(200);
+
+  procesarWebhookWhatsapp(poolBaseDatos, solicitud.body).catch((errorWebhook) => {
+    console.error('[WhatsApp Webhook] Error procesando evento entrante:', errorWebhook.message);
+  });
+});
+
+// ── RUTAS PÚBLICAS DE INVITACIÓN POR WHATSAPP (protegidas por token único temporal) ──
+
+aplicacion.get('/api/invitaciones-publicas/:token', async (solicitud, respuesta) => {
+  try {
+    const token = String(solicitud.params.token || '').trim();
+    if (!token || token.length < 16) {
+      return respuesta.status(404).json({ error: 'Enlace de invitación inválido.' });
+    }
+
+    const [filas] = await poolBaseDatos.query(
+      `SELECT id_solicitud, origen, rol_invitado, estado, nombre_anfitrion, motivo,
+              nombre_whatsapp_visitante, telefono_visitante,
+              token_expira_en, (token_expira_en IS NOT NULL AND token_expira_en < NOW()) AS expirado
+       FROM solicitudes_visita_whatsapp
+       WHERE token_formulario = ?
+       LIMIT 1`,
+      [token]
+    );
+
+    if (filas.length === 0) {
+      return respuesta.status(404).json({ error: 'Enlace de invitación no encontrado.' });
+    }
+
+    const sol = filas[0];
+    if (sol.estado === 'COMPLETADA') {
+      return respuesta.status(410).json({
+        error: 'Este enlace ya fue utilizado y el código QR ya fue generado.',
+      });
+    }
+    if (sol.estado !== 'APROBADA' || Number(sol.expirado) === 1) {
+      return respuesta.status(410).json({
+        error: 'Este enlace de invitación ha expirado. Solicita uno nuevo por WhatsApp.',
+      });
+    }
+
+    const origen = sol.origen || 'VISITANTE';
+    const telefonoSugerido = normalizarUltimos10Digitos(sol.telefono_visitante || '');
+
+    return respuesta.json({
+      origen,
+      rol_invitado: Number(sol.rol_invitado) === 3 ? 3 : 1,
+      requiere_datos_contacto: origen === 'ANFITRION' || !telefonoSugerido,
+      nombre_anfitrion: sol.nombre_anfitrion,
+      motivo: sol.motivo,
+      nombre_sugerido: sol.nombre_whatsapp_visitante || '',
+      telefono_sugerido: telefonoSugerido,
+      expira_en: sol.token_expira_en,
+    });
+  } catch (errorToken) {
+    console.error('Error al consultar invitación pública:', errorToken);
+    return respuesta.status(500).json({ error: 'Error al validar el enlace de invitación.' });
+  }
+});
+
+aplicacion.post('/api/invitaciones-publicas/:token/completar', async (solicitud, respuesta) => {
+  try {
+    const token = String(solicitud.params.token || '').trim();
+    if (!token || token.length < 16) {
+      return respuesta.status(404).json({ error: 'Enlace de invitación inválido.' });
+    }
+
+    const { cedula, nombre_completo, id_rol = 1, telefono = '', eps = '', arl = '' } =
+      solicitud.body || {};
+
+    const cedulaLimpia = String(cedula ?? '').trim();
+    const nombreLimpio = String(nombre_completo ?? '').trim();
+    const telefonoLimpio = String(telefono ?? '').trim();
+    const epsLimpia = String(eps ?? '').trim();
+    const arlLimpia = String(arl ?? '').trim();
+    const idRolSeguro = Number(id_rol) === 3 ? 3 : 1;
+
+    if (!cedulaLimpia || !nombreLimpio || !telefonoLimpio || !epsLimpia || !arlLimpia) {
+      return respuesta.status(400).json({
+        error: 'Todos los campos (cédula, nombre completo, celular WhatsApp, EPS y ARL) son obligatorios.',
+      });
+    }
+
+    const telefonoWhatsappVisitante = normalizarTelefonoWhatsapp(telefonoLimpio);
+    if (normalizarUltimos10Digitos(telefonoLimpio).length < 7) {
+      return respuesta.status(400).json({
+        error: 'Ingresa un número de celular / WhatsApp válido (mínimo 10 dígitos).',
+      });
+    }
+
+    const [filas] = await poolBaseDatos.query(
+      `SELECT *, (token_expira_en IS NOT NULL AND token_expira_en < NOW()) AS expirado
+       FROM solicitudes_visita_whatsapp
+       WHERE token_formulario = ?
+       LIMIT 1`,
+      [token]
+    );
+
+    if (filas.length === 0) {
+      return respuesta.status(404).json({ error: 'Enlace de invitación no encontrado.' });
+    }
+
+    const sol = filas[0];
+    if (sol.estado === 'COMPLETADA') {
+      return respuesta.status(409).json({
+        error: 'Este enlace ya fue utilizado y el código QR ya fue generado.',
+      });
+    }
+    if (sol.estado !== 'APROBADA' || Number(sol.expirado) === 1) {
+      return respuesta.status(410).json({
+        error: 'Este enlace de invitación ha expirado. Solicita uno nuevo por WhatsApp.',
+      });
+    }
+
+    const idRolFinal =
+      solicitud.body?.id_rol !== undefined
+        ? idRolSeguro
+        : Number(sol.rol_invitado) === 3
+          ? 3
+          : 1;
+    const telefonoDestinoVisitante =
+      normalizarTelefonoWhatsapp(sol.telefono_visitante || '') || telefonoWhatsappVisitante;
+
+    const configUnifi = obtenerConfiguracionUnifi();
+    const puertasSeleccionadas = configUnifi.puertasVisitante;
+    if (puertasSeleccionadas.length < 2) {
+      return respuesta.status(500).json({
+        error:
+          'No hay suficientes puertas configuradas en el servidor (UNIFI_PUERTAS_VISITANTE) para generar el QR.',
+      });
+    }
+
+    const { nombres, apellidos } = dividirNombreCompleto(nombreLimpio);
+    const duracionVigencia = Math.max(
+      Number(process.env.WHATSAPP_QR_VENTANA_SEGUNDOS) || 7200,
+      300
+    );
+    const limiteUsos = configUnifi.maxAccesos || 6;
+    const motivoRegistro = sol.motivo
+      ? `${sol.motivo} (Anfitrión: ${sol.nombre_anfitrion})`
+      : `Visita a ${sol.nombre_anfitrion}`;
+
+    const visitanteUnifi = await crearVisitanteUnifi({
+      nombres,
+      apellidos,
+      motivo: motivoRegistro,
+      telefono: telefonoLimpio,
+      doorIds: puertasSeleccionadas,
+      ventanaSegundos: duracionVigencia,
+    });
+
+    let qrGenerado;
+    let idRegistro;
+    let idQr;
+    try {
+      qrGenerado = await generarQrVisitanteUnifi(visitanteUnifi.visitorId);
+      const guardado = await guardarVisitaConQrEnBd(poolBaseDatos, {
+        datosPersona: {
+          cedula: cedulaLimpia,
+          nombre_completo: nombreLimpio,
+          telefono: telefonoLimpio,
+          eps: epsLimpia,
+          arl: arlLimpia,
+          id_rol: idRolFinal,
+        },
+        motivo: motivoRegistro,
+        visitanteUnifi,
+        limiteUsos,
+        qrBase64: qrGenerado.base64DataUrl,
+        idSolicitudWhatsapp: sol.id_solicitud,
+        telefonoWhatsappVisitante: telefonoDestinoVisitante,
+      });
+      idRegistro = guardado.idRegistro;
+      idQr = guardado.idQr;
+    } catch (errorPosteriorAUnifi) {
+      await eliminarVisitanteUnifi(visitanteUnifi.visitorId, true).catch(() => {});
+      throw errorPosteriorAUnifi;
+    }
+
+    let whatsappEnviado = false;
+    let motivoWhatsapp = null;
+    if (whatsappConfigurado() && telefonoDestinoVisitante && !visitanteUnifi.simulado) {
+      try {
+        const horaFin = new Date(Number(visitanteUnifi.finTimestamp) * 1000).toLocaleTimeString(
+          'es-CO',
+          { hour: '2-digit', minute: '2-digit' }
+        );
+        await enviarImagenQrWhatsapp(
+          telefonoDestinoVisitante,
+          qrGenerado.bufferPng,
+          `🎫 Pase de ingreso QR — ${nombreLimpio}\n` +
+            `👤 Anfitrión: ${sol.nombre_anfitrion}\n` +
+            `⏰ Válido hasta: ${horaFin} (${limiteUsos} accesos)\n` +
+            'Presenta este código frente al lector de entrada.'
+        );
+        whatsappEnviado = true;
+      } catch (errWaFoto) {
+        const plantillaQr = String(process.env.WHATSAPP_TEMPLATE_QR || '').trim();
+        if (errWaFoto.codigoMeta === 131047 && plantillaQr) {
+          try {
+            await enviarPlantillaWhatsapp(telefonoDestinoVisitante, plantillaQr, {
+              idioma: 'es',
+            });
+            whatsappEnviado = true;
+          } catch (errPlantilla) {
+            motivoWhatsapp = 'ventana_24h';
+            console.warn(
+              '[WhatsApp Bot] No se pudo enviar plantilla de respaldo al visitante:',
+              errPlantilla.message
+            );
+          }
+        } else {
+          motivoWhatsapp = errWaFoto.codigoMeta === 131047 ? 'ventana_24h' : 'error_envio';
+          console.warn(
+            '[WhatsApp Bot] No se pudo enviar la imagen del QR al visitante:',
+            errWaFoto.message
+          );
+        }
+      }
+
+      if (sol.telefono_anfitrion) {
+        const etiquetaRol = idRolFinal === 3 ? 'Proveedor' : 'Visitante';
+        await enviarTextoWhatsapp(
+          sol.telefono_anfitrion,
+          `🎫 ${nombreLimpio} (${etiquetaRol}, C.C. ${cedulaLimpia}, Tel. ${telefonoLimpio}) completó su registro y ya tiene su código QR de ingreso.`
+        ).catch(() => {});
+      }
+    }
+
+    return respuesta.status(201).json({
+      mensaje: 'Registro completado y código QR generado exitosamente',
+      id_registro: idRegistro,
+      id_qr: idQr,
+      origen: sol.origen || 'VISITANTE',
+      rol_invitado: idRolFinal,
+      cedula: cedulaLimpia,
+      nombre_completo: nombreLimpio,
+      motivo: sol.motivo || 'Visita autorizada',
+      fin_timestamp: visitanteUnifi.finTimestamp,
+      max_usos: limiteUsos,
+      qr_base64: qrGenerado.base64DataUrl,
+      simulado: Boolean(visitanteUnifi.simulado),
+      whatsapp: { enviado: whatsappEnviado, motivo: motivoWhatsapp },
+    });
+  } catch (errorCompletar) {
+    console.error('Error al completar registro público de visitante:', errorCompletar);
+    return respuesta.status(errorCompletar.codigoHttp || 502).json({
+      error:
+        errorCompletar.message ||
+        'No se pudo generar el código QR en la consola UniFi Access.',
+    });
+  }
+});
+
 const { pollIntervalMs } = obtenerConfiguracionUnifi();
 let intervaloMonitorQr = null;
 let servidorHttp = null;
@@ -1430,6 +1733,9 @@ const iniciarServidor = async () => {
 
   servidorHttp = aplicacion.listen(puertoServidor, () => {
     console.log(`Servidor backend corriendo en http://localhost:${puertoServidor}`);
+    if (whatsappConfigurado()) {
+      console.log('[WhatsApp Bot] Integración Meta Cloud API activa en /api/whatsapp/webhook.');
+    }
     if (modoPruebaUnifiSolicitado()) {
       if (esEntornoProduccion()) {
         console.warn(

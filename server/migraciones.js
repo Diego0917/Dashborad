@@ -91,6 +91,73 @@ const MIGRACIONES = [
       );
     },
   },
+  {
+    id: '002_flujo_whatsapp_visitas',
+    aplicar: async (pool) => {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS solicitudes_visita_whatsapp (
+          id_solicitud INT AUTO_INCREMENT PRIMARY KEY,
+          telefono_visitante VARCHAR(32) NOT NULL,
+          nombre_whatsapp_visitante VARCHAR(120) NULL,
+          estado ENUM(
+            'ESPERANDO_ANFITRION',
+            'ELIGIENDO_ANFITRION',
+            'ESPERANDO_MOTIVO',
+            'PENDIENTE_APROBACION',
+            'APROBADA',
+            'RECHAZADA',
+            'COMPLETADA',
+            'EXPIRADA'
+          ) NOT NULL DEFAULT 'ESPERANDO_ANFITRION',
+          candidatos_json TEXT NULL,
+          cedula_anfitrion VARCHAR(20) NULL,
+          nombre_anfitrion VARCHAR(120) NULL,
+          telefono_anfitrion VARCHAR(32) NULL,
+          motivo VARCHAR(255) NULL,
+          token_formulario VARCHAR(64) NULL UNIQUE,
+          token_expira_en DATETIME NULL,
+          id_registro INT NULL,
+          creado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          actualizado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          INDEX idx_sol_wa_visitante_estado (telefono_visitante, estado),
+          INDEX idx_sol_wa_anfitrion_estado (telefono_anfitrion, estado),
+          INDEX idx_sol_wa_token (token_formulario)
+        )
+      `);
+    },
+  },
+  {
+    id: '004_flujo_anfitrion_whatsapp',
+    aplicar: async (pool) => {
+      await ejecutarAlterIdempotente(
+        pool,
+        "ALTER TABLE solicitudes_visita_whatsapp ADD COLUMN origen ENUM('VISITANTE', 'ANFITRION') NOT NULL DEFAULT 'VISITANTE' AFTER id_solicitud"
+      );
+      await ejecutarAlterIdempotente(
+        pool,
+        'ALTER TABLE solicitudes_visita_whatsapp ADD COLUMN rol_invitado TINYINT NOT NULL DEFAULT 1 AFTER origen'
+      );
+      await ejecutarAlterIdempotente(
+        pool,
+        'ALTER TABLE solicitudes_visita_whatsapp MODIFY COLUMN telefono_visitante VARCHAR(32) NULL'
+      );
+      await ejecutarAlterIdempotente(
+        pool,
+        `ALTER TABLE solicitudes_visita_whatsapp MODIFY COLUMN estado ENUM(
+          'ESPERANDO_ANFITRION',
+          'ELIGIENDO_ANFITRION',
+          'ESPERANDO_MOTIVO',
+          'PENDIENTE_APROBACION',
+          'ANFITRION_ESPERANDO_NOMBRE',
+          'ANFITRION_ESPERANDO_MOTIVO',
+          'APROBADA',
+          'RECHAZADA',
+          'COMPLETADA',
+          'EXPIRADA'
+        ) NOT NULL DEFAULT 'ESPERANDO_ANFITRION'`
+      );
+    },
+  },
 ];
 
 /**
